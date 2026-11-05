@@ -1,0 +1,17 @@
+﻿{
+  "name": "VIÁTIKO - API de Gastos de Transporte",
+  "short_name": "VIÁTIKO",
+  "description": "Gestión, escaneo OCR y liquidación de gastos de transporte",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0c1e36",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

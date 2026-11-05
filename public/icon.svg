@@ -1,0 +1,39 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="gradBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="gradPin" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#2563eb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="gradDinero" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Fondo Redondeado App Icon -->
+  <rect width="512" height="512" rx="120" fill="url(#gradBg)" />
+  
+  <!-- Icono del Pin de Ubicación (Ruta) -->
+  <g transform="translate(116, 50)">
+    <path d="M140 0 C62.68 0 0 62.68 0 140 C0 224 93.33 308 130.67 341.33 C136 346 144 346 149.33 341.33 C186.67 308 280 224 280 140 C280 62.68 217.32 0 140 0 Z" fill="none" stroke="url(#gradPin)" stroke-width="24" stroke-linejoin="round" />
+    
+    <!-- Camión & Flecha Ascendente (Control Financiero) -->
+    <path d="M50 160 L140 160 L140 100 L200 100 L230 140 L230 190 L50 190 Z" fill="#ffffff" fill-opacity="0.15" stroke="#ffffff" stroke-width="16" stroke-linejoin="round" />
+    <circle cx="90" cy="190" r="24" fill="#0f172a" stroke="#ffffff" stroke-width="10" />
+    <circle cx="190" cy="190" r="24" fill="#0f172a" stroke="#ffffff" stroke-width="10" />
+    <path d="M40 140 L110 80 L160 110 L210 50" fill="none" stroke="#38bdf8" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M180 50 L210 50 L210 80" fill="none" stroke="#38bdf8" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+  
+  <!-- Burbuja de Dinero / Viáticos (Superior Derecha) -->
+  <circle cx="400" cy="110" r="48" fill="url(#gradDinero)" stroke="#ffffff" stroke-width="10" />
+  <text x="400" y="126" font-family="'Plus Jakarta Sans', Arial, sans-serif" font-weight="900" font-size="52" fill="#ffffff" text-anchor="middle">$</text>
+  
+  <!-- Burbuja de Dinero (Inferior Izquierda) -->
+  <circle cx="110" cy="370" r="48" fill="url(#gradDinero)" stroke="#ffffff" stroke-width="10" />
+  <text x="110" y="386" font-family="'Plus Jakarta Sans', Arial, sans-serif" font-weight="900" font-size="52" fill="#ffffff" text-anchor="middle">$</text>
+</svg>

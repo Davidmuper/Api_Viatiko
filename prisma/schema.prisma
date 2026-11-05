@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Empresa {
+  id              Int              @id @default(autoincrement())
+  nit             String           @unique
+  nombre          String
+  conductores     Conductor[]
+  gastos          Gasto[]
+  viajes          ViajeLiquidado[]
+  pucs            Puc[]
+  createdAt       DateTime         @default(now())
+}
+
+model Conductor {
+  id              Int              @id @default(autoincrement())
+  empresaId       Int
+  empresa         Empresa          @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  nombre          String
+  placa           String
+  anticipo        Float            @default(0)
+  password        String           @default("654321")
+  rol             String           @default("conductor")
+
+  @@unique([empresaId, nombre])
+}
+
+model Puc {
+  id              Int              @id @default(autoincrement())
+  empresaId       Int
+  empresa         Empresa          @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  nombre          String
+  codigo          String
+
+  @@unique([empresaId, nombre])
+}
+
+model Gasto {
+  id              Int              @id @default(autoincrement())
+  empresaId       Int
+  empresa         Empresa          @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  fecha           String           @default("")
+  establecimiento String
+  nit             String?
+  consecutivo     String           @default("")
+  categoria       String
+  cuenta_contable String           @default("")
+  centro_costos   String           @default("")
+  total           Float
+  conductor       String?
+  placa           String?
+  metodo          String           @default("Efectivo")
+  tipo_registro   String           @default("comprobante")
+  observacion     String           @default("")
+  estado          String           @default("activo")
+  estado_contable String           @default("pendiente")
+  viajeId         Int?
+}
+
+model ViajeLiquidado {
+  id              Int              @id @default(autoincrement())
+  empresaId       Int
+  empresa         Empresa          @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  fechaCierre     String
+  conductor       String
+  placa           String
+  anticipoTotal   Float
+  gastosTotal     Float
+  saldoFinal      Float
+  resumenGastos   String           @default("[]")
+}

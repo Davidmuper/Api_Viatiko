@@ -1,0 +1,674 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>VIÁTIKO | Plataforma de Gastos de Transporte</title>
+  
+  <meta name="theme-color" content="#0c1e36">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif; -webkit-tap-highlight-color: transparent; }
+    .safe-top { padding-top: env(safe-area-inset-top); }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col antialiased selection:bg-blue-600">
+
+  <header class="bg-slate-800/80 backdrop-blur-md border-b border-slate-700/60 sticky top-0 z-40 safe-top">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <img src="/icon.svg" class="w-10 h-10 rounded-xl shadow-md border border-slate-700" alt="Logo">
+        <div>
+          <div class="flex items-center space-x-2">
+            <span class="text-xs uppercase font-extrabold tracking-wider text-emerald-400">VIÁTIKO</span>
+            <span id="badgeEmpresa" class="text-[10px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded font-semibold border border-slate-600">SaaS Seguro</span>
+          </div>
+          <h1 id="txtTituloEmpresa" class="text-sm font-bold text-white tracking-tight">Control de Liquidación</h1>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-2">
+        <button id="btnSalir" onclick="cerrarSesion()" class="hidden bg-red-600/80 hover:bg-red-500 text-white text-xs px-3 py-1.5 rounded-lg transition font-semibold">
+          Salir
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-5xl w-full mx-auto p-4 md:p-6 pb-24 safe-bottom">
+
+    <section id="secLogin" class="max-w-md mx-auto my-6 bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-2xl">
+      <div class="text-center mb-6">
+        <img src="/icon.svg" class="w-16 h-16 mx-auto mb-3 rounded-2xl border border-slate-700 shadow-lg">
+        <h2 class="text-xl font-extrabold text-white">Ingreso a VIÁTIKO</h2>
+        <p class="text-xs text-slate-400 mt-1">SaaS de gastos de transporte con cifrado de datos</p>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Empresa de Transporte</label>
+          <input type="text" id="loginEmpresa" onchange="cargarConductoresPorEmpresa()" value="Petroquímicos S.A." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Perfil / Conductor</label>
+          <select id="loginUsuario" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"></select>
+        </div>
+        <div>
+          <div class="flex justify-between items-center mb-1">
+            <label class="text-xs font-semibold text-slate-300">Contraseña</label>
+            <span class="text-[11px] text-slate-400">Predeterminada: 654321</span>
+          </div>
+          <input type="password" id="loginClave" value="654321" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500">
+        </div>
+        
+        <button type="button" onclick="procesarIngreso()" class="w-full bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-semibold py-2.5 rounded-xl shadow-lg shadow-blue-600/30 transition">
+          Ingresar al Sistema
+        </button>
+      </div>
+    </section>
+
+    <section id="secConductor" class="hidden space-y-5">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-gradient-to-br from-blue-900/40 to-slate-800 border border-blue-500/30 rounded-2xl p-4">
+          <p class="text-[11px] font-bold tracking-wider text-blue-300 uppercase">Anticipo Asignado</p>
+          <p id="cardAnticipo" class="text-xl sm:text-2xl font-black text-white mt-1">$0</p>
+          <p id="cardPlaca" class="text-xs text-blue-400 mt-0.5">Vehículo: ---</p>
+        </div>
+        <div class="bg-gradient-to-br from-emerald-900/40 to-slate-800 border border-emerald-500/30 rounded-2xl p-4">
+          <p class="text-[11px] font-bold tracking-wider text-emerald-300 uppercase">Saldo a Favor</p>
+          <p id="cardSaldo" class="text-xl sm:text-2xl font-black text-emerald-400 mt-1">$0</p>
+          <p id="cardGastado" class="text-xs text-slate-400 mt-0.5">Gastos: $0</p>
+        </div>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl space-y-3">
+        <h3 class="text-base font-bold text-white text-center">Registrar Gasto del Viaje Actual</h3>
+        <p class="text-xs text-slate-400 text-center mb-2">Toma foto, sube de galería o digita manualmente</p>
+        
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="flex flex-col items-center justify-center border-2 border-dashed border-blue-500/50 hover:border-blue-400 bg-blue-500/10 rounded-2xl p-4 cursor-pointer transition active:scale-[0.99]">
+            <svg class="w-8 h-8 text-blue-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="text-xs font-bold text-blue-300">Cámara o Galería</span>
+            <span class="text-[10px] text-slate-400">Lectura OCR inteligente</span>
+            <input type="file" id="inputFoto" accept="image/*" class="hidden" onchange="procesarFotoOCR(event)">
+          </label>
+
+          <button type="button" onclick="abrirIngresoManual()" class="flex flex-col items-center justify-center border-2 border-slate-700 hover:border-slate-600 bg-slate-900/60 rounded-2xl p-4 transition active:scale-[0.99]">
+            <svg class="w-8 h-8 text-emerald-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            <span class="text-xs font-bold text-emerald-300">Gasto Manual</span>
+            <span class="text-[10px] text-slate-400">Sin recibo / efectivo rápido</span>
+          </button>
+        </div>
+        
+        <div id="loaderOCR" class="hidden mt-3 items-center justify-center space-x-2 text-xs text-blue-400">
+          <svg class="animate-spin h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
+          <span>Extrayendo datos fiscales con IA...</span>
+        </div>
+      </div>
+
+      <div id="boxFormGasto" class="hidden bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl">
+        <h4 id="lblTituloFormGasto" class="text-sm font-bold text-white mb-3 flex items-center justify-between">
+          <span>Detalle del Gasto</span>
+          <span id="badgeTipoGasto" class="text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded">Comprobante</span>
+        </h4>
+        <div class="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <label class="text-slate-400">Fecha</label>
+            <input type="date" id="gastoFecha" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white">
+          </div>
+          <div>
+            <label class="text-slate-400">Total Pagado ($)</label>
+            <input type="number" id="gastoTotal" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white font-bold text-emerald-400" placeholder="50000">
+          </div>
+          <div>
+            <label class="text-slate-400">Establecimiento / Taller</label>
+            <input type="text" id="gastoEstablecimiento" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white">
+          </div>
+          <div>
+            <label class="text-slate-400">NIT o Cédula</label>
+            <input type="text" id="gastoNit" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white">
+          </div>
+          <div>
+            <label class="text-slate-400">Factura / Consecutivo</label>
+            <input type="text" id="gastoConsecutivo" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white">
+          </div>
+          <div>
+            <label class="text-slate-400">Categoría PUC</label>
+            <select id="gastoCategoria" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white"></select>
+          </div>
+          <div class="col-span-2">
+            <label class="text-slate-400 flex items-center justify-between">
+              <span>Observación Operativa</span>
+              <span class="text-[10px] text-slate-500">Detalle específico del gasto</span>
+            </label>
+            <textarea id="gastoObservacion" rows="2" placeholder="Ej: Se cambiaron 2 llantas traseras / Arreglo de manguera" class="w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"></textarea>
+          </div>
+        </div>
+        <div class="flex gap-2 mt-4">
+          <button onclick="cerrarFormGasto()" class="w-1/3 bg-slate-700 hover:bg-slate-600 font-semibold py-2 rounded-xl text-xs text-white">Cancelar</button>
+          <button onclick="guardarGastoConfirmado()" class="w-2/3 bg-emerald-600 hover:bg-emerald-500 font-bold py-2.5 rounded-xl text-white shadow-lg shadow-emerald-600/30 transition text-xs">
+            Confirmar y Guardar Gasto
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-gradient-to-r from-slate-800 to-slate-800/90 border border-slate-700 rounded-2xl p-4 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div>
+          <h4 class="text-sm font-bold text-white">¿Llegaste a destino?</h4>
+          <p class="text-xs text-slate-400">Finaliza el viaje actual para generar tu planilla de liquidación y dejar el saldo en cero.</p>
+        </div>
+        <button onclick="finalizarViajeConductor()" class="w-full sm:w-auto bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-extrabold text-xs px-5 py-3 rounded-xl shadow-lg transition active:scale-[0.98] whitespace-nowrap">
+          🏁 Finalizar y Liquidar este Viaje
+        </button>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4">
+        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Gastos Activos en este Viaje</h4>
+        <div id="listaGastosConductor" class="space-y-2 max-h-72 overflow-y-auto"></div>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">Historial de Viajes Liquidados</h4>
+          <span class="text-[10px] text-emerald-400 font-semibold">Cerrados</span>
+        </div>
+        <div id="listaViajesHistorico" class="space-y-3 max-h-80 overflow-y-auto"></div>
+      </div>
+    </section>
+
+    <section id="secAdmin" class="hidden space-y-6">
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl flex flex-wrap gap-4 items-center justify-between">
+        <div>
+          <h3 class="text-base font-bold text-white">Consola de Control de Flotas</h3>
+          <p class="text-xs text-slate-400">Exportación de planos contables seguros con aislamiento de datos</p>
+        </div>
+        <div>
+          <button onclick="descargarPlanoContable()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-lg shadow-emerald-600/30 flex items-center space-x-2">
+            <span>📥 Descargar Plano Contable (CSV / Excel)</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
+        <h4 class="text-sm font-bold text-white mb-3">Anticipos y Liquidaciones por Conductor</h4>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-900/60 text-slate-400 uppercase text-[10px]">
+              <tr>
+                <th class="p-2.5">Conductor</th>
+                <th class="p-2.5">Placa</th>
+                <th class="p-2.5">Anticipo</th>
+                <th class="p-2.5 text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tablaAdminConductores" class="divide-y divide-slate-700"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5">
+        <h4 class="text-sm font-bold text-white mb-3">Registro de Planillas y Viajes Liquidados</h4>
+        <div id="listaViajesHistoricoAdmin" class="space-y-3 max-h-96 overflow-y-auto"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="modalPlanilla" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-start border-b border-slate-700 pb-3 mb-4">
+        <div>
+          <span class="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">Planilla Oficial de Liquidación</span>
+          <h3 id="planTitulo" class="text-base font-extrabold text-white">Viaje #---</h3>
+        </div>
+        <button onclick="cerrarPlanilla()" class="text-slate-400 hover:text-white text-lg font-bold">&times;</button>
+      </div>
+
+      <div id="planCuerpo" class="space-y-4 text-xs"></div>
+
+      <div class="mt-5 pt-3 border-t border-slate-700 flex justify-end">
+        <button onclick="cerrarPlanilla()" class="bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-xl text-xs">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var usuarioActual = null;
+    var empresaActual = 'Petroquímicos S.A.';
+    var conductoresMemoria = [];
+    var pucsMemoria = [];
+    var esRegistroManual = false;
+    var BASE_URL = window.location.protocol + '//' + window.location.host;
+
+    function cargarInicial() {
+      cargarConductoresPorEmpresa();
+      cargarPucsPorEmpresa();
+    }
+
+    function cargarConductoresPorEmpresa() {
+      empresaActual = document.getElementById('loginEmpresa').value.trim() || 'Petroquímicos S.A.';
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', BASE_URL + '/api/gastos/conductores?empresa=' + encodeURIComponent(empresaActual), true);
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          conductoresMemoria = JSON.parse(xhr.responseText);
+          var selCond = document.getElementById('loginUsuario');
+          var html = '<option value="Administrador">👑 Administrador Contable</option>';
+          for (var i = 0; i < conductoresMemoria.length; i++) {
+            var c = conductoresMemoria[i];
+            if (c.nombre !== 'Administrador') {
+              html += '<option value="' + c.nombre + '">🚛 ' + c.nombre + ' (' + c.placa + ')</option>';
+            }
+          }
+          selCond.innerHTML = html;
+        }
+      };
+      xhr.send();
+    }
+
+    function cargarPucsPorEmpresa() {
+      empresaActual = document.getElementById('loginEmpresa').value.trim() || 'Petroquímicos S.A.';
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', BASE_URL + '/api/gastos/puc?empresa=' + encodeURIComponent(empresaActual), true);
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          pucsMemoria = JSON.parse(xhr.responseText);
+          var selCat = document.getElementById('gastoCategoria');
+          var html = '';
+          for (var i = 0; i < pucsMemoria.length; i++) {
+            var p = pucsMemoria[i];
+            html += '<option value="' + p.nombre + '">' + p.nombre + ' (Cta: ' + p.codigo + ')</option>';
+          }
+          selCat.innerHTML = html;
+        }
+      };
+      xhr.send();
+    }
+
+    function procesarIngreso() {
+      var user = document.getElementById('loginUsuario').value;
+      var pass = document.getElementById('loginClave').value.trim();
+      empresaActual = document.getElementById('loginEmpresa').value.trim() || 'Petroquímicos S.A.';
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', BASE_URL + '/api/gastos/login', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+
+      xhr.onload = function() {
+        var resp;
+        try { resp = JSON.parse(xhr.responseText); } catch(e) { resp = {}; }
+
+        if (xhr.status === 200 && resp.success) {
+          usuarioActual = user;
+          document.getElementById('txtTituloEmpresa').innerText = empresaActual;
+          document.getElementById('badgeEmpresa').innerText = 'Aliado: ' + empresaActual;
+
+          document.getElementById('secLogin').classList.add('hidden');
+          document.getElementById('btnSalir').classList.remove('hidden');
+
+          if (resp.rol === 'admin' || user === 'Administrador') {
+            document.getElementById('secAdmin').classList.remove('hidden');
+            renderAdminConductores();
+            cargarHistoricoViajesAdmin();
+          } else {
+            document.getElementById('secConductor').classList.remove('hidden');
+            cargarDatosConductor(user);
+          }
+        } else {
+          alert(resp.error || 'Credenciales inválidas');
+        }
+      };
+
+      xhr.onerror = function() {
+        alert('Error de conexión con el servidor.');
+      };
+
+      xhr.send(JSON.stringify({ empresa: empresaActual, usuario: user, password: pass }));
+    }
+
+    function cerrarSesion() {
+      usuarioActual = null;
+      document.getElementById('secLogin').classList.remove('hidden');
+      document.getElementById('secConductor').classList.add('hidden');
+      document.getElementById('secAdmin').classList.add('hidden');
+      document.getElementById('btnSalir').classList.add('hidden');
+    }
+
+    function cargarDatosConductor(nombre) {
+      var xhrC = new XMLHttpRequest();
+      xhrC.open('GET', BASE_URL + '/api/gastos/conductores?empresa=' + encodeURIComponent(empresaActual), true);
+      xhrC.onload = function() {
+        if (xhrC.status === 200) {
+          conductoresMemoria = JSON.parse(xhrC.responseText);
+          var cond = { anticipo: 0, placa: 'N/A' };
+          for (var i = 0; i < conductoresMemoria.length; i++) {
+            if (conductoresMemoria[i].nombre === nombre) {
+              cond = conductoresMemoria[i];
+              break;
+            }
+          }
+
+          document.getElementById('cardAnticipo').innerText = '$' + Number(cond.anticipo).toLocaleString('es-CO');
+          document.getElementById('cardPlaca').innerText = 'Vehículo: ' + cond.placa;
+
+          var xhrG = new XMLHttpRequest();
+          xhrG.open('GET', BASE_URL + '/api/gastos?empresa=' + encodeURIComponent(empresaActual) + '&conductor=' + encodeURIComponent(nombre), true);
+          xhrG.onload = function() {
+            if (xhrG.status === 200) {
+              var gastos = JSON.parse(xhrG.responseText);
+              var totalGastado = 0;
+              for (var j = 0; j < gastos.length; j++) {
+                totalGastado += Number(gastos[j].total) || 0;
+              }
+              var saldo = Number(cond.anticipo) - totalGastado;
+
+              document.getElementById('cardGastado').innerText = 'Gastos: $' + totalGastado.toLocaleString('es-CO');
+              document.getElementById('cardSaldo').innerText = '$' + saldo.toLocaleString('es-CO');
+
+              var contenedor = document.getElementById('listaGastosConductor');
+              if (gastos.length === 0) {
+                contenedor.innerHTML = '<p class="text-xs text-slate-500 text-center py-4">No hay gastos activos en este viaje.</p>';
+              } else {
+                var html = '';
+                for (var k = 0; k < gastos.length; k++) {
+                  var g = gastos[k];
+                  html += '<div class="bg-slate-900/60 border border-slate-700/60 p-2.5 rounded-xl text-xs space-y-1">' +
+                    '<div class="flex justify-between items-center">' +
+                      '<div><span class="font-bold text-white">' + (g.establecimiento || 'Comprobante') + '</span> ' +
+                      (g.tipo_registro === 'manual' ? '<span class="text-amber-400 font-bold text-[10px]">(Manual)</span>' : '') + '</div>' +
+                      '<span class="font-bold text-emerald-400">$' + Number(g.total).toLocaleString('es-CO') + '</span>' +
+                    '</div>' +
+                    '<p class="text-[10px] text-slate-400">' + g.fecha + ' • ' + g.categoria + (g.consecutivo ? ' • Fac: ' + g.consecutivo : '') + '</p>' +
+                    (g.observacion ? '<div class="text-[11px] text-blue-300 bg-blue-950/40 p-1.5 rounded-lg border border-blue-900/50"><strong>Nota:</strong> ' + g.observacion + '</div>' : '') +
+                  '</div>';
+                }
+                contenedor.innerHTML = html;
+              }
+            }
+          };
+          xhrG.send();
+
+          cargarHistoricoViajesConductor(nombre);
+        }
+      };
+      xhrC.send();
+    }
+
+    function procesarFotoOCR(event) {
+      var file = event.target.files[0];
+      if (!file) return;
+
+      esRegistroManual = false;
+      var loader = document.getElementById('loaderOCR');
+      loader.classList.remove('hidden');
+      loader.classList.add('flex');
+
+      var formData = new FormData();
+      formData.append('comprobante', file);
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', BASE_URL + '/api/gastos/analizar', true);
+      xhr.onload = function() {
+        loader.classList.add('hidden');
+        loader.classList.remove('flex');
+        event.target.value = '';
+
+        if (xhr.status === 200) {
+          var data = JSON.parse(xhr.responseText);
+          document.getElementById('boxFormGasto').classList.remove('hidden');
+          document.getElementById('badgeTipoGasto').innerText = 'Comprobante OCR';
+          document.getElementById('badgeTipoGasto').className = 'text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded';
+
+          document.getElementById('gastoFecha').value = data.fecha || new Date().toISOString().slice(0, 10);
+          document.getElementById('gastoTotal').value = data.total || '';
+          document.getElementById('gastoEstablecimiento').value = data.establecimiento || '';
+          document.getElementById('gastoNit').value = data.nit || '';
+          document.getElementById('gastoConsecutivo').value = data.consecutivo || '';
+          document.getElementById('gastoObservacion').value = '';
+          if (data.categoria) document.getElementById('gastoCategoria').value = data.categoria;
+        } else {
+          alert('Error analizando la imagen.');
+        }
+      };
+      xhr.onerror = function() {
+        loader.classList.add('hidden');
+        loader.classList.remove('flex');
+        alert('Error al subir la imagen.');
+      };
+      xhr.send(formData);
+    }
+
+    function abrirIngresoManual() {
+      esRegistroManual = true;
+      document.getElementById('boxFormGasto').classList.remove('hidden');
+      document.getElementById('badgeTipoGasto').innerText = 'Ingreso Manual';
+      document.getElementById('badgeTipoGasto').className = 'text-[10px] bg-amber-900/60 text-amber-300 border border-amber-700 px-2 py-0.5 rounded';
+
+      document.getElementById('gastoFecha').value = new Date().toISOString().slice(0, 10);
+      document.getElementById('gastoTotal').value = '';
+      document.getElementById('gastoEstablecimiento').value = '';
+      document.getElementById('gastoNit').value = 'Sin NIT';
+      document.getElementById('gastoConsecutivo').value = 'MANUAL';
+      document.getElementById('gastoObservacion').value = '';
+      document.getElementById('gastoTotal').focus();
+    }
+
+    function cerrarFormGasto() {
+      document.getElementById('boxFormGasto').classList.add('hidden');
+    }
+
+    function guardarGastoConfirmado() {
+      var total = parseFloat(document.getElementById('gastoTotal').value);
+      if (!total || total <= 0) return alert('Por favor ingrese un total válido.');
+
+      var cond = null;
+      for (var i = 0; i < conductoresMemoria.length; i++) {
+        if (conductoresMemoria[i].nombre === usuarioActual) cond = conductoresMemoria[i];
+      }
+
+      var payload = {
+        empresa: empresaActual,
+        fecha: document.getElementById('gastoFecha').value,
+        total: total,
+        establecimiento: document.getElementById('gastoEstablecimiento').value || (esRegistroManual ? 'Gasto de Ruta' : 'Comprobante'),
+        nit: document.getElementById('gastoNit').value,
+        consecutivo: document.getElementById('gastoConsecutivo').value,
+        categoria: document.getElementById('gastoCategoria').value,
+        observacion: document.getElementById('gastoObservacion').value.trim(),
+        conductor: usuarioActual,
+        placa: cond ? cond.placa : '',
+        metodo: 'Efectivo',
+        tipo_registro: esRegistroManual ? 'manual' : 'comprobante'
+      };
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', BASE_URL + '/api/gastos', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onload = function() {
+        if (xhr.status === 201 || xhr.status === 200) {
+          alert('Gasto registrado con éxito.');
+          cerrarFormGasto();
+          cargarDatosConductor(usuarioActual);
+        } else {
+          alert('Error al guardar el gasto.');
+        }
+      };
+      xhr.send(JSON.stringify(payload));
+    }
+
+    function finalizarViajeConductor() {
+      if (!confirm('¿Deseas cerrar este viaje? Todos los gastos actuales se liquidarán, se generará tu planilla formal y el anticipo quedará en $0.')) {
+        return;
+      }
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', BASE_URL + '/api/gastos/finalizar-liquidacion', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          alert('¡Viaje liquidado con éxito! Tu saldo ha quedado en cero.');
+          cargarDatosConductor(usuarioActual);
+        } else {
+          alert('Error al liquidar el viaje.');
+        }
+      };
+      xhr.send(JSON.stringify({ empresa: empresaActual, conductor: usuarioActual }));
+    }
+
+    function cargarHistoricoViajesConductor(conductor) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', BASE_URL + '/api/gastos/viajes-historial?empresa=' + encodeURIComponent(empresaActual) + '&conductor=' + encodeURIComponent(conductor), true);
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          var viajes = JSON.parse(xhr.responseText);
+          var cont = document.getElementById('listaViajesHistorico');
+          if (viajes.length === 0) {
+            cont.innerHTML = '<p class="text-xs text-slate-500 text-center py-3">Aún no tienes viajes liquidados anteriores.</p>';
+          } else {
+            var html = '';
+            for (var i = 0; i < viajes.length; i++) {
+              var v = viajes[i];
+              html += '<div class="bg-slate-900/80 border border-slate-700/80 p-3 rounded-xl text-xs flex justify-between items-center">' +
+                '<div>' +
+                  '<p class="font-bold text-white">Viaje #' + v.id + ' • ' + v.fechaCierre + '</p>' +
+                  '<p class="text-[10px] text-slate-400">Anticipo: $' + Number(v.anticipoTotal).toLocaleString('es-CO') + ' • Gastos: $' + Number(v.gastosTotal).toLocaleString('es-CO') + '</p>' +
+                  '<p class="text-[11px] font-semibold text-emerald-400">Saldo Liquidado: $' + Number(v.saldoFinal).toLocaleString('es-CO') + '</p>' +
+                '</div>' +
+                '<button onclick="verPlanilla(' + v.id + ')" class="bg-blue-600/80 hover:bg-blue-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Ver Planilla</button>' +
+              '</div>';
+            }
+            cont.innerHTML = html;
+          }
+        }
+      };
+      xhr.send();
+    }
+
+    function verPlanilla(viajeId) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', BASE_URL + '/api/gastos/viajes-historial?empresa=' + encodeURIComponent(empresaActual), true);
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          var viajes = JSON.parse(xhr.responseText);
+          var viaje = null;
+          for (var i = 0; i < viajes.length; i++) {
+            if (viajes[i].id === viajeId) { viaje = viajes[i]; break; }
+          }
+          if (!viaje) return alert('Viaje no encontrado');
+
+          document.getElementById('planTitulo').innerText = 'Planilla de Liquidación #' + viaje.id + ' - ' + viaje.conductor;
+
+          var gastos = [];
+          try { gastos = JSON.parse(viaje.resumenGastos); } catch(e){}
+
+          var html = '<div class="grid grid-cols-2 gap-2 bg-slate-900 p-3 rounded-xl border border-slate-700">' +
+            '<div><span class="text-slate-400 text-[10px]">Vehículo:</span> <strong class="text-white">' + viaje.placa + '</strong></div>' +
+            '<div><span class="text-slate-400 text-[10px]">Fecha Cierre:</span> <strong class="text-white">' + viaje.fechaCierre + '</strong></div>' +
+            '<div><span class="text-slate-400 text-[10px]">Anticipo Inicial:</span> <strong class="text-blue-400">$' + Number(viaje.anticipoTotal).toLocaleString('es-CO') + '</strong></div>' +
+            '<div><span class="text-slate-400 text-[10px]">Gastos Totales:</span> <strong class="text-red-400">$' + Number(viaje.gastosTotal).toLocaleString('es-CO') + '</strong></div>' +
+            '<div class="col-span-2 pt-2 border-t border-slate-800 flex justify-between items-center">' +
+              '<span class="text-[11px] font-bold text-slate-300">Saldo Final del Viaje:</span>' +
+              '<span class="text-sm font-black text-emerald-400">$' + Number(viaje.saldoFinal).toLocaleString('es-CO') + '</span>' +
+            '</div>' +
+          '</div>';
+
+          html += '<h5 class="font-bold text-white mt-3 mb-2">Comprobantes y Observaciones Registradas:</h5>';
+          html += '<div class="space-y-2 max-h-56 overflow-y-auto">';
+          for (var j = 0; j < gastos.length; j++) {
+            var g = gastos[j];
+            html += '<div class="bg-slate-900/50 border border-slate-700/60 p-2.5 rounded-xl text-xs space-y-1">' +
+              '<div class="flex justify-between font-semibold">' +
+                '<span class="text-white">' + g.establecimiento + ' (' + g.categoria + ')</span>' +
+                '<span class="text-emerald-400">$' + Number(g.total).toLocaleString('es-CO') + '</span>' +
+              '</div>' +
+              '<p class="text-[10px] text-slate-400">' + g.fecha + ' • NIT: ' + (g.nit || 'Sin NIT') + ' • Factura: ' + (g.consecutivo || 'S/N') + '</p>' +
+              (g.observacion ? '<p class="text-[11px] text-blue-300 bg-blue-950/40 p-1 rounded border border-blue-900/40"><strong>Observación:</strong> ' + g.observacion + '</p>' : '') +
+            '</div>';
+          }
+          html += '</div>';
+
+          document.getElementById('planCuerpo').innerHTML = html;
+          document.getElementById('modalPlanilla').classList.remove('hidden');
+        }
+      };
+      xhr.send();
+    }
+
+    function cerrarPlanilla() {
+      document.getElementById('modalPlanilla').classList.add('hidden');
+    }
+
+    function renderAdminConductores() {
+      var tbody = document.getElementById('tablaAdminConductores');
+      var html = '';
+      for (var i = 0; i < conductoresMemoria.length; i++) {
+        var c = conductoresMemoria[i];
+        if (c.nombre !== 'Administrador') {
+          html += '<tr class="hover:bg-slate-700/30">' +
+            '<td class="p-2.5 font-semibold text-white">' + c.nombre + '</td>' +
+            '<td class="p-2.5 text-blue-400 font-mono">' + c.placa + '</td>' +
+            '<td class="p-2.5 text-emerald-400 font-bold">$' + Number(c.anticipo).toLocaleString('es-CO') + '</td>' +
+            '<td class="p-2.5 text-right space-x-1">' +
+              '<button onclick="asignarAnticipoPrompt(' + c.id + ', ' + c.anticipo + ')" class="bg-blue-600/80 hover:bg-blue-500 text-[10px] px-2 py-1 rounded">Asignar Anticipo</button>' +
+            '</td></tr>';
+        }
+      }
+      tbody.innerHTML = html;
+    }
+
+    function cargarHistoricoViajesAdmin() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', BASE_URL + '/api/gastos/viajes-historial?empresa=' + encodeURIComponent(empresaActual), true);
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          var viajes = JSON.parse(xhr.responseText);
+          var cont = document.getElementById('listaViajesHistoricoAdmin');
+          if (viajes.length === 0) {
+            cont.innerHTML = '<p class="text-xs text-slate-500 text-center py-4">No hay viajes liquidados en la plataforma.</p>';
+          } else {
+            var html = '';
+            for (var i = 0; i < viajes.length; i++) {
+              var v = viajes[i];
+              html += '<div class="bg-slate-900/80 border border-slate-700/80 p-3 rounded-xl text-xs flex justify-between items-center">' +
+                '<div>' +
+                  '<p class="font-bold text-white">Planilla #' + v.id + ' • ' + v.conductor + ' (' + v.placa + ')</p>' +
+                  '<p class="text-[10px] text-slate-400">Fecha: ' + v.fechaCierre + ' • Anticipo: $' + Number(v.anticipoTotal).toLocaleString('es-CO') + ' • Gastos: $' + Number(v.gastosTotal).toLocaleString('es-CO') + '</p>' +
+                  '<p class="text-[11px] font-semibold text-emerald-400">Saldo Liquidado: $' + Number(v.saldoFinal).toLocaleString('es-CO') + '</p>' +
+                '</div>' +
+                '<button onclick="verPlanilla(' + v.id + ')" class="bg-emerald-600/80 hover:bg-emerald-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Ver Planilla Completa</button>' +
+              '</div>';
+            }
+            cont.innerHTML = html;
+          }
+        }
+      };
+      xhr.send();
+    }
+
+    function asignarAnticipoPrompt(id, actual) {
+      var nuevo = prompt('Ingrese el nuevo valor del anticipo para el conductor:', actual);
+      if (nuevo === null) return;
+      var xhr = new XMLHttpRequest();
+      xhr.open('PATCH', BASE_URL + '/api/gastos/conductores/' + id + '/anticipo', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onload = function() {
+        cargarConductoresPorEmpresa();
+        setTimeout(renderAdminConductores, 400);
+      };
+      xhr.send(JSON.stringify({ anticipo: parseFloat(nuevo) || 0 }));
+    }
+
+    function descargarPlanoContable() {
+      window.location.href = BASE_URL + '/api/gastos/exportar-contable?empresa=' + encodeURIComponent(empresaActual);
+    }
+
+    window.onload = cargarInicial;
+  </script>
+</body>
+</html>
