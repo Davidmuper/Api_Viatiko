@@ -11,7 +11,7 @@ const CUENTAS_PUC = {
   'Otros': '519595'
 };
 
-const apiKey = process.env.GEMINI_API_KEY;
+const apiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : null;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
 export async function analizarComprobanteConGemini(buffer, mimeType = 'image/jpeg') {
@@ -31,22 +31,20 @@ export async function analizarComprobanteConGemini(buffer, mimeType = 'image/jpe
   }
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json'
-      }
-    });
+    // Usar el alias latest que garantiza disponibilidad en v1beta
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
 
-    const prompt = `Analiza este comprobante de gasto de transporte/carretera en Colombia y extrae la información en un objeto JSON con los siguientes campos estrictos:
-- fecha: cadena en formato YYYY-MM-DD. Si no es legible, usa la fecha de hoy.
-- establecimiento: nombre comercial o razón social de quien expide la factura/tique.
-- nit: número de identificación tributaria o RUT (solo dígitos y guion). Si no existe, pon "Sin NIT".
-- consecutivo: número de factura, tirilla o ticket de pago.
-- categoria: clasifica en una de las siguientes opciones exactas: "Combustible", "Peajes", "Mantenimiento / Taller", "Hospedaje / Alimentación", "Cargue / Descargue", "Parqueadero / Lavado", "Pesaje", "Otros".
-- total: número entero o decimal positivo con el valor total pagado (sin puntos de miles ni símbolo $).
-- placa: placa del vehículo si aparece (ejemplo: WNQ013). Si no aparece, deja cadena vacía.
-- conductor: nombre del conductor si aparece impreso. Si no aparece, deja cadena vacía.`;
+    const prompt = `Analiza este comprobante de gasto de transporte en Colombia y responde ÚNICAMENTE con un objeto JSON sin bloques markdown ni texto adicional. Formato estricto:
+{
+  "fecha": "YYYY-MM-DD",
+  "establecimiento": "Nombre del establecimiento",
+  "nit": "Número de NIT o Sin NIT",
+  "consecutivo": "Número de factura o ticket",
+  "categoria": "Combustible | Peajes | Mantenimiento / Taller | Hospedaje / Alimentación | Cargue / Descargue | Parqueadero / Lavado | Pesaje | Otros",
+  "total": 0,
+  "placa": "Placa del vehículo o vacío",
+  "conductor": "Nombre o vacío"
+}`;
 
     const partes = [
       prompt,
@@ -59,7 +57,11 @@ export async function analizarComprobanteConGemini(buffer, mimeType = 'image/jpe
     ];
 
     const result = await model.generateContent(partes);
-    const textoRespuesta = result.response.text();
+    let textoRespuesta = result.response.text();
+
+    // Limpieza de formato Markdown si la respuesta incluye ```json
+    textoRespuesta = textoRespuesta.replace(/```json/gi, '').replace(/```/g, '').trim();
+
     const datos = JSON.parse(textoRespuesta);
 
     const categoriaFinal = datos.categoria || 'Otros';
