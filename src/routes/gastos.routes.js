@@ -1,17 +1,17 @@
 ﻿import { Router } from 'express';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../services/db.service.js';
 import { analizarComprobanteConGemini, diagnosticarGemini } from '../services/gemini.service.js';
 import { generarExportacionContable } from '../services/excel.service.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 
-// Configuración de multer en memoria
+// Configuración de multer en memoria. Vercel acepta máximo 4,5 MB por petición;
+// el celular comprime la foto (~200 KB) antes de subirla, así que 4 MB sobra.
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }
+  limits: { fileSize: 4 * 1024 * 1024 }
 });
 
 const EMPRESA_POR_DEFECTO = 'Petroquímicos S.A.';
@@ -212,8 +212,10 @@ function recibirComprobante(req, res, next) {
     const muyGrande = err.code === 'LIMIT_FILE_SIZE';
     return res.status(muyGrande ? 413 : 400).json({
       ocr_ok: false,
-      error: muyGrande ? 'La foto supera 10 MB' : 'No se pudo recibir la foto',
-      ocr_error: muyGrande ? 'La foto es demasiado grande.' : `No se pudo recibir la foto (${err.message}).`
+      error: muyGrande ? 'La foto supera 4 MB' : 'No se pudo recibir la foto',
+      ocr_error: muyGrande
+        ? 'La foto es demasiado grande (máx. 4 MB). Tome la foto de nuevo o use una de menor tamaño.'
+        : `No se pudo recibir la foto (${err.message}).`
     });
   });
 }

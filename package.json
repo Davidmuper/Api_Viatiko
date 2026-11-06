@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "build": "prisma generate"
+    "build": "prisma generate",
+    "postinstall": "prisma generate"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
@@ -25,5 +26,8 @@
   },
   "devDependencies": {
     "prisma": "^5.22.0"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
