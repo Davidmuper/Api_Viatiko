@@ -7,13 +7,71 @@ import { generarExportacionContable } from '../services/excel.service.js';
 const router = Router();
 const prisma = new PrismaClient();
 
-// Configuración de multer en memoria para procesar la imagen sin guardarla en disco
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // Límite de 10MB
+  limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-// 1. Ruta para analizar el comprobante con Google Gemini
+// 1. Obtener lista de conductores (por empresa)
+router.get('/conductores', async (req, res) => {
+  try {
+    const { empresa } = req.query;
+    const whereClause = empresa ? { empresa: { nombre: empresa } } : {};
+    
+    // Consulta los conductores creados en la base de datos
+    let conductores = await prisma.conductor.findMany({
+      where: whereClause
+    });
+
+    // Si la relación no filtra por nombre directo, devolver todos los conductores
+    if (conductores.length === 0) {
+      conductores = await prisma.conductor.findMany();
+    }
+
+    return res.json(conductores);
+  } catch (error) {
+    console.error('Error obteniendo conductores:', error);
+    return res.status(500).json({ error: 'Error cargando conductores' });
+  }
+});
+
+// 2. Obtener cuentas PUC
+router.get('/puc', async (req, res) => {
+  try {
+    const cuentas = await prisma.puc.findMany();
+    return res.json(cuentas);
+  } catch (error) {
+    console.error('Error obteniendo PUC:', error);
+    return res.status(500).json({ error: 'Error cargando cuentas PUC' });
+  }
+});
+
+// 3. Inicio de sesión
+router.post('/login', async (req, res) => {
+  try {
+    const { conductorId, password, empresa } = req.body;
+
+    const conductor = await prisma.conductor.findFirst({
+      where: conductorId ? { id: Number(conductorId) } : {}
+    });
+
+    if (!conductor) {
+      return res.status(401).json({ error: 'Conductor o perfil no válido' });
+    }
+
+    // Retornar datos de sesión esperados por el frontend
+    return res.json({
+      success: true,
+      conductor: conductor,
+      token: 'jwt-session-token'
+    });
+  } catch (error) {
+    console.error('Error en login:', error);
+    return res.status(500).json({ error: 'Fallo al autenticar' });
+  }
+});
+
+// 4. Analizar comprobante con Gemini OCR
 router.post('/analizar', upload.single('imagen'), async (req, res) => {
   try {
     if (!req.file) {
@@ -32,7 +90,7 @@ router.post('/analizar', upload.single('imagen'), async (req, res) => {
   }
 });
 
-// 2. Ruta para registrar un gasto en la base de datos
+// 5. Guardar gasto
 router.post('/gastos', async (req, res) => {
   try {
     const {
@@ -70,32 +128,31 @@ router.post('/gastos', async (req, res) => {
   }
 });
 
-// 3. Ruta para exportar a Excel (compatible con Siigo y Loggro)
+// 6. Exportar liquidación contable a Excel
 router.get('/viajes/:id/exportar-contable', async (req, res) => {
   try {
     const viajeId = Number(req.params.id);
 
-    // Consulta el viaje junto a todos los gastos asociados
-    const viaje = await prisma.viaje.findUnique({
+    const viaje = await prisma.viajeLiquidado.findUnique({
       where: { id: viajeId },
-      include: {
-        gastos: true
-      }
+      include: { gastos: true }
+    }).catch(async () => {
+      return await prisma.viaje.findUnique({
+        where: { id: viajeId },
+        include: { gastos: true }
+      });
     });
 
     if (!viaje) {
-      return res.status(404).json({ error: 'El viaje especificado no existe.' });
+      return res.status(404).json({ error: 'Viaje no encontrado' });
     }
 
-    // Lee el software por parámetro (?software=LOGGRO o por defecto SIIGO)
     const software = req.query.software || 'SIIGO';
-    const cuentaAnticipo = '133015'; // Cuenta contable estándar de anticipos
-
     const bufferExcel = await generarExportacionContable(
       viaje,
-      viaje.gastos,
+      viaje.gastos || [],
       software,
-      cuentaAnticipo
+      '133015'
     );
 
     res.setHeader(
@@ -110,7 +167,7 @@ router.get('/viajes/:id/exportar-contable', async (req, res) => {
     return res.send(bufferExcel);
   } catch (error) {
     console.error('Error generando archivo contable:', error);
-    return res.status(500).json({ error: 'Error al exportar los datos contables a Excel.' });
+    return res.status(500).json({ error: 'Error al exportar los datos contables' });
   }
 });
 
