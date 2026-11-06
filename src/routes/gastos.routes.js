@@ -171,12 +171,16 @@ const guardarGastoHandler = async (req, res) => {
       conductor
     } = req.body;
 
+    // Asignación directa y segura de código PUC sin consultar campos inexistentes
     let cta = cuenta_contable;
     if (!cta && categoria) {
-      const pucMatch = await prisma.puc.findFirst({
-        where: { categoria: { contains: categoria, mode: 'insensitive' } }
-      });
-      if (pucMatch) cta = pucMatch.codigo;
+      const cat = String(categoria).toLowerCase();
+      if (cat.includes('combustible')) cta = '519525';
+      else if (cat.includes('peaje')) cta = '519530';
+      else if (cat.includes('parqueadero') || cat.includes('lavado')) cta = '519535';
+      else if (cat.includes('mantenimiento') || cat.includes('taller')) cta = '514510';
+      else if (cat.includes('alimentacion') || cat.includes('viatico')) cta = '519565';
+      else cta = '519595';
     }
 
     const nuevoGasto = await prisma.gasto.create({
@@ -197,7 +201,7 @@ const guardarGastoHandler = async (req, res) => {
     return res.status(201).json(nuevoGasto);
   } catch (error) {
     console.error('Error guardando gasto:', error);
-    return res.status(500).json({ error: 'No se pudo registrar el gasto' });
+    return res.status(500).json({ error: 'No se pudo registrar el gasto', detalle: error.message });
   }
 };
 
