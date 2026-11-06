@@ -1,106 +1,132 @@
 ﻿import ExcelJS from 'exceljs';
 
-export async function generarExportacionContable(viaje, gastos, software = 'SIIGO', cuentaAnticipo = '133015') {
-  const workbook = new ExcelJS.Workbook();
-  const softwareNormalizado = (software || 'SIIGO').toUpperCase();
+const NIT_GENERICO = '222222222';
+const CUENTA_GASTO_DEFECTO = '519595';
 
-  if (softwareNormalizado === 'LOGGRO') {
-    construirHojaLoggro(workbook, viaje, gastos, cuentaAnticipo);
-  } else {
-    // Siigo o formato genérico
-    construirHojaSiigo(workbook, viaje, gastos, cuentaAnticipo);
+/**
+ * Genera el plano contable en partida doble:
+ *  - Débito a la cuenta PUC del gasto
+ *  - Crédito a la cuenta de anticipo (por defecto 133015)
+ *
+ * @param {object} contexto Viaje liquidado ({ id, placa, ... }) o datos de empresa para exportes masivos
+ * @param {Array}  gastos   Registros del modelo Gasto
+ * @param {string} software SIIGO | LOGGRO | GENERICO
+ */
+export async function generarExportacionContable(contexto, gastos, software = 'SIIGO', cuentaAnticipo = '133015') {
+  const workbook = new ExcelJS.Workbook();
+  const movimientos = construirMovimientos(contexto || {}, gastos || [], cuentaAnticipo);
+
+  switch ((software || 'SIIGO').toUpperCase()) {
+    case 'LOGGRO':
+      construirHojaLoggro(workbook, movimientos);
+      break;
+    case 'GENERICO':
+      construirHojaGenerica(workbook, movimientos);
+      break;
+    default:
+      construirHojaSiigo(workbook, movimientos);
   }
 
-  return await workbook.xlsx.writeBuffer();
+  return workbook.xlsx.writeBuffer();
 }
 
-// Estructura adaptada para importación en Siigo Nube
-function construirHojaSiigo(workbook, viaje, gastos, cuentaAnticipo) {
-  const ws = workbook.addWorksheet('Siigo_Comprobantes');
+function fechaISO(valor) {
+  const fecha = valor ? new Date(valor) : new Date();
+  return Number.isNaN(fecha.getTime()) ? new Date().toISOString().slice(0, 10) : fecha.toISOString().slice(0, 10);
+}
 
-  ws.columns = [
-    { header: 'Comprobante', key: 'comprobante', width: 15 },
-    { header: 'Fecha (AAAA-MM-DD)', key: 'fecha', width: 18 },
-    { header: 'Cuenta Contable', key: 'cuenta', width: 18 },
-    { header: 'NIT Tercero', key: 'nit', width: 16 },
-    { header: 'Centro Costo', key: 'centro_costo', width: 15 },
-    { header: 'Descripción / Concepto', key: 'descripcion', width: 32 },
-    { header: 'Débito', key: 'debito', width: 16 },
-    { header: 'Crédito', key: 'credito', width: 16 }
-  ];
+// Convierte cada gasto en su par débito/crédito, independiente del software destino
+function construirMovimientos(contexto, gastos, cuentaAnticipo) {
+  const movimientos = [];
 
   gastos.forEach((g) => {
     const valor = Number(g.total) || 0;
-    const fecha = g.fecha ? new Date(g.fecha).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const placa = g.placa || contexto.placa || 'GENERAL';
+    const viajeId = g.viajeId || contexto.id;
+    const base = {
+      comprobante: viajeId ? `CC-${viajeId}` : 'CC-1',
+      fecha: fechaISO(g.fecha),
+      placa,
+      centroCosto: g.centro_costos || placa,
+      conductor: g.conductor || contexto.conductor || ''
+    };
 
-    // Registro Débito: Gasto según cuenta PUC escaneada por Gemini
-    ws.addRow({
-      comprobante: 'CC-1',
-      fecha: fecha,
-      cuenta: g.cuenta_contable || '519595',
-      nit: g.nit || '222222222',
-      centro_costo: viaje.vehiculo || 'GENERAL',
+    movimientos.push({
+      ...base,
+      cuenta: g.cuenta_contable || CUENTA_GASTO_DEFECTO,
+      nit: g.nit && g.nit !== 'Sin NIT' ? g.nit : NIT_GENERICO,
       descripcion: `${g.establecimiento || 'Gasto'} - Fact ${g.consecutivo || 'S/N'}`,
       debito: valor,
       credito: 0
     });
 
-    // Registro Crédito: Legalización/Descargo de anticipo
-    ws.addRow({
-      comprobante: 'CC-1',
-      fecha: fecha,
+    movimientos.push({
+      ...base,
       cuenta: cuentaAnticipo,
-      nit: viaje.conductorNit || g.nit || '222222222',
-      centro_costo: viaje.vehiculo || 'GENERAL',
-      descripcion: `Legalización anticipo placa ${viaje.vehiculo || ''}`,
+      nit: contexto.conductorNit || NIT_GENERICO,
+      descripcion: `Legalización anticipo placa ${placa}`,
       debito: 0,
       credito: valor
     });
   });
 
+  return movimientos;
+}
+
+function formatoMoneda(ws) {
   ws.getColumn('debito').numFmt = '#,##0';
   ws.getColumn('credito').numFmt = '#,##0';
+  ws.getRow(1).font = { bold: true };
+}
+
+// Estructura adaptada para importación en Siigo Nube
+function construirHojaSiigo(workbook, movimientos) {
+  const ws = workbook.addWorksheet('Siigo_Comprobantes');
+  ws.columns = [
+    { header: 'Comprobante', key: 'comprobante', width: 15 },
+    { header: 'Fecha (AAAA-MM-DD)', key: 'fecha', width: 18 },
+    { header: 'Cuenta Contable', key: 'cuenta', width: 18 },
+    { header: 'NIT Tercero', key: 'nit', width: 16 },
+    { header: 'Centro Costo', key: 'centroCosto', width: 15 },
+    { header: 'Descripción / Concepto', key: 'descripcion', width: 36 },
+    { header: 'Débito', key: 'debito', width: 16 },
+    { header: 'Crédito', key: 'credito', width: 16 }
+  ];
+  ws.addRows(movimientos);
+  formatoMoneda(ws);
 }
 
 // Estructura adaptada para Loggro
-function construirHojaLoggro(workbook, viaje, gastos, cuentaAnticipo) {
+function construirHojaLoggro(workbook, movimientos) {
   const ws = workbook.addWorksheet('Loggro_Movimientos');
-
   ws.columns = [
     { header: 'Fecha', key: 'fecha', width: 14 },
     { header: 'Identificación', key: 'nit', width: 16 },
     { header: 'Código Cuenta', key: 'cuenta', width: 16 },
-    { header: 'Centro Costo / Placa', key: 'placa', width: 18 },
-    { header: 'Nota', key: 'nota', width: 32 },
+    { header: 'Centro Costo / Placa', key: 'centroCosto', width: 18 },
+    { header: 'Nota', key: 'descripcion', width: 36 },
     { header: 'Débito', key: 'debito', width: 16 },
     { header: 'Crédito', key: 'credito', width: 16 }
   ];
+  ws.addRows(movimientos);
+  formatoMoneda(ws);
+}
 
-  gastos.forEach((g) => {
-    const valor = Number(g.total) || 0;
-    const fecha = g.fecha ? new Date(g.fecha).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
-
-    ws.addRow({
-      fecha: fecha,
-      nit: g.nit || '222222222',
-      cuenta: g.cuenta_contable || '519595',
-      placa: viaje.vehiculo || 'GENERAL',
-      nota: `Compra ${g.categoria || 'Gasto'} - ${g.establecimiento || ''}`,
-      debito: valor,
-      credito: 0
-    });
-
-    ws.addRow({
-      fecha: fecha,
-      nit: viaje.conductorNit || g.nit || '222222222',
-      cuenta: cuentaAnticipo,
-      placa: viaje.vehiculo || 'GENERAL',
-      nota: `Descargo anticipo placa ${viaje.vehiculo || ''}`,
-      debito: 0,
-      credito: valor
-    });
-  });
-
-  ws.getColumn('debito').numFmt = '#,##0';
-  ws.getColumn('credito').numFmt = '#,##0';
+// Formato genérico para cualquier ERP
+function construirHojaGenerica(workbook, movimientos) {
+  const ws = workbook.addWorksheet('Plano_Contable');
+  ws.columns = [
+    { header: 'Comprobante', key: 'comprobante', width: 14 },
+    { header: 'Fecha', key: 'fecha', width: 14 },
+    { header: 'Cuenta', key: 'cuenta', width: 14 },
+    { header: 'Tercero (NIT)', key: 'nit', width: 16 },
+    { header: 'Conductor', key: 'conductor', width: 22 },
+    { header: 'Placa', key: 'placa', width: 12 },
+    { header: 'Centro Costo', key: 'centroCosto', width: 14 },
+    { header: 'Descripción', key: 'descripcion', width: 36 },
+    { header: 'Débito', key: 'debito', width: 16 },
+    { header: 'Crédito', key: 'credito', width: 16 }
+  ];
+  ws.addRows(movimientos);
+  formatoMoneda(ws);
 }

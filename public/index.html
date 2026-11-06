@@ -658,8 +658,17 @@
       xhr.open('PATCH', BASE_URL + '/api/gastos/conductores/' + id + '/anticipo', true);
       xhr.setRequestHeader('Content-Type', 'application/json');
       xhr.onload = function() {
+        if (xhr.status >= 400) {
+          var msg = 'Error al actualizar el anticipo';
+          try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
+          alert(msg);
+          return;
+        }
         cargarConductoresPorEmpresa();
         setTimeout(renderAdminConductores, 400);
+      };
+      xhr.onerror = function() {
+        alert('No se pudo conectar con el servidor');
       };
       xhr.send(JSON.stringify({ anticipo: parseFloat(nuevo) || 0 }));
     }
