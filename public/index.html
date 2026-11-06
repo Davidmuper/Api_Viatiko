@@ -842,7 +842,54 @@
     }
 
     function descargarPlanoContable() {
-      window.location.href = BASE_URL + '/api/gastos/exportar-contable?empresa=' + encodeURIComponent(empresaActual);
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', BASE_URL + '/api/gastos/exportar-contable?empresa=' + encodeURIComponent(empresaActual), true);
+      xhr.responseType = 'blob';
+      xhr.onload = function() {
+        if (xhr.status !== 200) {
+          // El cuerpo del error llega como blob: se lee como texto para mostrar el motivo
+          var lector = new FileReader();
+          lector.onload = function() {
+            var msg = 'Error al generar el plano contable.';
+            try { msg = JSON.parse(lector.result).error || msg; } catch (e) {}
+            alert(msg);
+          };
+          lector.readAsText(xhr.response);
+          return;
+        }
+
+        var nombre = 'plano_contable.xlsx';
+        var disp = xhr.getResponseHeader('Content-Disposition') || '';
+        var m = disp.match(/filename="?([^";]+)"?/);
+        if (m) nombre = m[1];
+
+        var url = URL.createObjectURL(xhr.response);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = nombre;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+
+        var ids = (xhr.getResponseHeader('X-Gastos-Ids') || '').split(',').filter(Boolean).map(Number);
+        if (ids.length === 0) return;
+        setTimeout(function() {
+          if (!confirm('Se descargaron ' + ids.length + ' gastos.\n\n¿Marcarlos como contabilizados? No volverán a aparecer en el próximo plano contable.\n\n(Cancelar si la descarga falló o aún no la va a importar)')) return;
+          var x2 = new XMLHttpRequest();
+          x2.open('POST', BASE_URL + '/api/gastos/marcar-contabilizado', true);
+          x2.setRequestHeader('Content-Type', 'application/json');
+          x2.onload = function() {
+            if (x2.status >= 400) return alert(textoError(x2, 'Error al marcar los gastos.'));
+            var r = JSON.parse(x2.responseText);
+            alert(r.marcados + ' gastos marcados como contabilizados.');
+          };
+          x2.onerror = function() { alert('No se pudo conectar con el servidor.'); };
+          x2.send(JSON.stringify({ ids: ids, empresa: empresaActual }));
+        }, 600);
+      };
+      xhr.onerror = function() { alert('No se pudo conectar con el servidor.'); };
+      xhr.send();
     }
 
     window.onload = cargarInicial;

@@ -1,5 +1,6 @@
 ﻿import { Router } from 'express';
 import multer from 'multer';
+import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { analizarComprobanteConGemini } from '../services/gemini.service.js';
 import { generarExportacionContable } from '../services/excel.service.js';
@@ -14,6 +15,16 @@ const upload = multer({
 });
 
 const EMPRESA_POR_DEFECTO = 'Petroquímicos S.A.';
+
+const CAMPOS_PUBLICOS_CONDUCTOR = {
+  id: true, empresaId: true, nombre: true, placa: true, anticipo: true, rol: true
+};
+
+function sinPassword(conductor) {
+  if (!conductor) return conductor;
+  const { password, ...resto } = conductor;
+  return resto;
+}
 
 /**
  * Determina el empresaId obligatorio para Gasto y ViajeLiquidado.
@@ -64,12 +75,14 @@ router.get('/conductores', async (req, res) => {
     const { empresa } = req.query;
     const whereClause = empresa ? { empresa: { nombre: empresa } } : {};
     
+    // Nunca se envía el hash de la contraseña al navegador
     let conductores = await prisma.conductor.findMany({
-      where: whereClause
+      where: whereClause,
+      select: CAMPOS_PUBLICOS_CONDUCTOR
     });
 
     if (conductores.length === 0) {
-      conductores = await prisma.conductor.findMany();
+      conductores = await prisma.conductor.findMany({ select: CAMPOS_PUBLICOS_CONDUCTOR });
     }
 
     return res.json(conductores);
@@ -90,31 +103,59 @@ router.get('/puc', async (req, res) => {
   }
 });
 
-// 3. Inicio de sesión
+// 3. Inicio de sesión: valida la contraseña contra el hash bcrypt de la empresa solicitada
+const ERROR_CREDENCIALES = {
+  error: 'Usuario o contraseña incorrectos',
+  codigo: 'CREDENCIALES_INVALIDAS'
+};
+// Hash de relleno para que un usuario inexistente tarde lo mismo que uno real (evita enumerar usuarios)
+const HASH_RELLENO = bcrypt.hashSync('viatiko-relleno', 10);
+
 router.post('/login', async (req, res) => {
   try {
     const { conductorId, usuario, password, empresa } = req.body;
 
-    let conductor;
-    if (conductorId) {
-      conductor = await prisma.conductor.findUnique({
-        where: { id: Number(conductorId) }
+    if (!password || (!usuario && !conductorId)) {
+      return res.status(400).json({
+        error: 'Debe indicar usuario y contraseña',
+        codigo: 'DATOS_INCOMPLETOS'
       });
-    } else if (usuario) {
-      conductor = await prisma.conductor.findFirst({
-        where: { nombre: usuario }
-      });
-    } else {
-      conductor = await prisma.conductor.findFirst();
     }
 
-    if (!conductor) {
-      return res.status(401).json({ error: 'Conductor o perfil no válido' });
+    const empresaRecord = await prisma.empresa.findFirst({
+      where: { nombre: { equals: String(empresa || EMPRESA_POR_DEFECTO).trim(), mode: 'insensitive' } }
+    });
+
+    const conductor = empresaRecord
+      ? await prisma.conductor.findFirst({
+          where: conductorId
+            ? { id: Number(conductorId), empresaId: empresaRecord.id }
+            : { nombre: String(usuario), empresaId: empresaRecord.id }
+        })
+      : null;
+
+    const guardado = conductor ? conductor.password : HASH_RELLENO;
+    const esHash = /^\$2[aby]\$/.test(guardado);
+    // Compatibilidad: claves antiguas en texto plano se aceptan una vez y se migran a bcrypt
+    const valida = esHash
+      ? await bcrypt.compare(String(password), guardado)
+      : String(password) === guardado;
+
+    if (!conductor || !valida) {
+      return res.status(401).json(ERROR_CREDENCIALES);
+    }
+
+    if (!esHash) {
+      await prisma.conductor.update({
+        where: { id: conductor.id },
+        data: { password: await bcrypt.hash(String(password), 10) }
+      });
     }
 
     return res.json({
       success: true,
-      conductor: conductor,
+      rol: conductor.rol,
+      conductor: sinPassword(conductor),
       token: 'jwt-session-token'
     });
   } catch (error) {
@@ -537,7 +578,7 @@ router.patch('/conductores/:id', async (req, res) => {
       where: { id },
       data: { nombre, placa }
     });
-    return res.json({ success: true, conductor: actualizado });
+    return res.json({ success: true, conductor: sinPassword(actualizado) });
   } catch (error) {
     if (error.code === 'P2002') {
       return res.status(409).json({ error: 'Ya existe un conductor con ese nombre en la empresa' });
@@ -571,32 +612,98 @@ router.delete('/conductores/:id', async (req, res) => {
   }
 });
 
+// ---------- Control contable ----------
+
+function marcarComoExportados(ids, empresaId) {
+  return prisma.gasto.updateMany({
+    where: {
+      id: { in: ids },
+      viajeId: { not: null },
+      estado_contable: 'pendiente',
+      ...(empresaId ? { empresaId } : {})
+    },
+    data: { estado_contable: 'exportado' }
+  });
+}
+
+// 9g. Marcar como contabilizados los gastos ya descargados en el plano contable
+router.post('/marcar-contabilizado', async (req, res) => {
+  try {
+    const { ids, empresa } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Debe enviar la lista de IDs de gastos (ids)' });
+    }
+    if (ids.length > 10000) {
+      return res.status(400).json({ error: 'Máximo 10.000 gastos por corte' });
+    }
+    const idsNumericos = ids.map(Number);
+    if (!idsNumericos.every(Number.isInteger)) {
+      return res.status(400).json({ error: 'Todos los IDs deben ser números enteros' });
+    }
+
+    const empresaId = empresa ? await resolverEmpresaId({ empresa }) : null;
+    const resultado = await marcarComoExportados(idsNumericos, empresaId);
+
+    return res.json({
+      success: true,
+      marcados: resultado.count,
+      omitidos: idsNumericos.length - resultado.count
+    });
+  } catch (error) {
+    console.error('Error marcando gastos contabilizados:', error);
+    return res.status(500).json({ error: 'Error al marcar los gastos como contabilizados' });
+  }
+});
+
 // 10. Exportar liquidación contable a Excel
 router.get('/exportar-contable', async (req, res) => {
   try {
-    const { empresa, software = 'SIIGO' } = req.query;
+    const { empresa, software = 'SIIGO', incluirExportados, marcar } = req.query;
+
+    const empresaId = await resolverEmpresaId({ empresa });
+    if (!empresaId) {
+      return res.status(404).json({ error: 'Empresa no encontrada' });
+    }
+
+    // Solo gastos de viajes liquidados; por defecto los que aún no se han contabilizado
+    const where = { empresaId, viajeId: { not: null } };
+    if (incluirExportados !== 'true') where.estado_contable = 'pendiente';
 
     const gastos = await prisma.gasto.findMany({
-      orderBy: { id: 'desc' }
+      where,
+      orderBy: [{ viajeId: 'asc' }, { id: 'asc' }]
     });
 
+    if (gastos.length === 0) {
+      return res.status(404).json({
+        error: 'No hay gastos liquidados pendientes por contabilizar',
+        codigo: 'SIN_PENDIENTES'
+      });
+    }
+
     const bufferExcel = await generarExportacionContable(
-      { empresa: empresa || 'VIATIKO', vehiculo: 'CONSOLIDADO' },
+      { empresa: empresa || EMPRESA_POR_DEFECTO },
       gastos,
       String(software).toUpperCase(),
       '133015'
     );
 
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
+    const ids = gastos.map(g => g.id);
+    // Marcado en un solo paso (opcional): ?marcar=true
+    if (marcar === 'true') {
+      await marcarComoExportados(ids, empresaId);
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename=plano_${software.toLowerCase()}_${Date.now()}.xlsx`
+      `attachment; filename="plano_${String(software).toLowerCase()}_${fechaComoTexto()}_${ids.length}gastos.xlsx"`
     );
+    res.setHeader('X-Gastos-Ids', ids.join(','));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Gastos-Ids, Content-Disposition');
 
-    return res.send(bufferExcel);
+    return res.send(Buffer.from(bufferExcel));
   } catch (error) {
     console.error('Error generando plano contable:', error);
     return res.status(500).json({ error: 'Error al exportar los datos contables' });
