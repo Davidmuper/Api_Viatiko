@@ -29,7 +29,13 @@ function modelosConfigurados() {
 // Si los preferidos fallan, se consulta ListModels con la misma API key y se usan los
 // modelos multimodales que esa key realmente tiene habilitados.
 
-const URL_LISTA_MODELOS = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000';
+// Tiempos: ningún recibo debe tardar más de TIEMPO_TOTAL_MS en el servidor
+const TIEMPO_POR_MODELO_MS = 20000;
+const TIEMPO_TOTAL_MS = 40000;
+const TIEMPO_MINIMO_INTENTO_MS = 4000;
+const MAX_DESCUBIERTOS = 2;
+
+const URL_LISTA_MODELOS ='https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000';
 const TTL_CACHE_MS = 60 * 60 * 1000;
 let cacheModelos = { lista: null, expira: 0 };
 
@@ -56,7 +62,10 @@ export function ordenarModelosDisponibles(modelos) {
 async function descubrirModelos() {
   if (cacheModelos.lista && Date.now() < cacheModelos.expira) return cacheModelos.lista;
 
-  const resp = await fetch(URL_LISTA_MODELOS, { headers: { 'x-goog-api-key': apiKey } });
+  const resp = await fetch(URL_LISTA_MODELOS, {
+    headers: { 'x-goog-api-key': apiKey },
+    signal: AbortSignal.timeout(8000)
+  });
   const cuerpo = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new Error(`ListModels ${resp.status}: ${cuerpo?.error?.message || resp.statusText}`);
@@ -222,13 +231,23 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
   const intentados = new Set();
   let descubiertos = false;
 
+  // Límite total para que la petición nunca se quede colgada
+  const limite = Date.now() + TIEMPO_TOTAL_MS;
+
   const intentarModelo = async (nombreModelo) => {
     intentados.add(nombreModelo);
-    const model = genAI.getGenerativeModel({
-      model: nombreModelo,
-      generationConfig: { responseMimeType: 'application/json', temperature: 0 }
-    });
+    const restante = limite - Date.now();
+    const timeout = Math.min(TIEMPO_POR_MODELO_MS, restante);
+    const model = genAI.getGenerativeModel(
+      {
+        model: nombreModelo,
+        generationConfig: { responseMimeType: 'application/json', temperature: 0 }
+      },
+      { timeout }
+    );
+    const inicio = Date.now();
     const result = await model.generateContent(partes);
+    console.info(`Gemini ${nombreModelo} respondió en ${Date.now() - inicio} ms`);
     return extraerJson(result.response.text());
   };
 
@@ -237,9 +256,13 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
   // Si todos los preferidos están marcados como retirados, se pasa directo a los descubiertos
   if (cola.length < configurados.length && cacheModelos.lista) {
     descubiertos = true;
-    cola.push(...cacheModelos.lista.filter(m => !estaNoDisponible(m)).slice(0, 3));
+    cola.push(...cacheModelos.lista.filter(m => !estaNoDisponible(m)).slice(0, MAX_DESCUBIERTOS));
   }
   while (cola.length > 0) {
+    if (limite - Date.now() < TIEMPO_MINIMO_INTENTO_MS) {
+      errores.push('Tiempo de lectura agotado');
+      break;
+    }
     const nombreModelo = cola.shift();
     if (intentados.has(nombreModelo)) continue;
     try {
@@ -267,7 +290,7 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
         descubiertos = true;
         try {
           const disponibles = await descubrirModelos();
-          cola.push(...disponibles.filter(m => !intentados.has(m)).slice(0, 3));
+          cola.push(...disponibles.filter(m => !intentados.has(m)).slice(0, MAX_DESCUBIERTOS));
         } catch (errLista) {
           console.warn(`No se pudo consultar ListModels: ${errLista.message}`);
           errores.push(errLista.message);
@@ -277,9 +300,12 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
   }
 
   console.error('Ningún modelo de Gemini respondió:', errores.join(' | '));
+  const huboDemora = errores.some(e => /abort|timeout|timed out|tiempo/i.test(e));
   return {
     ...vacio,
     ocr_ok: false,
-    ocr_error: 'No se pudo leer el recibo con IA. ' + (errores[errores.length - 1] || '').slice(0, 250)
+    ocr_error: huboDemora
+      ? 'La lectura con IA tardó demasiado.'
+      : 'No se pudo leer el recibo con IA. ' + (errores[errores.length - 1] || '').slice(0, 250)
   };
 }

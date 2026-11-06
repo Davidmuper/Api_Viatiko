@@ -194,7 +194,20 @@ router.patch('/conductores/:id/anticipo', async (req, res) => {
 });
 
 // 5. Analizar comprobante con Gemini OCR
-router.post('/analizar', uploadAnalisis, async (req, res) => {
+// Errores de carga (archivo muy grande, campo inesperado) como JSON en lugar de página HTML
+function recibirComprobante(req, res, next) {
+  uploadAnalisis(req, res, (err) => {
+    if (!err) return next();
+    const muyGrande = err.code === 'LIMIT_FILE_SIZE';
+    return res.status(muyGrande ? 413 : 400).json({
+      ocr_ok: false,
+      error: muyGrande ? 'La foto supera 10 MB' : 'No se pudo recibir la foto',
+      ocr_error: muyGrande ? 'La foto es demasiado grande.' : `No se pudo recibir la foto (${err.message}).`
+    });
+  });
+}
+
+router.post('/analizar', recibirComprobante, async (req, res) => {
   try {
     const archivo = req.files?.['comprobante']?.[0] || req.files?.['imagen']?.[0] || req.file;
 

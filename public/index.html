@@ -105,11 +105,6 @@
             <span class="text-[10px] text-slate-400">Sin recibo / efectivo rápido</span>
           </button>
         </div>
-        
-        <div id="loaderOCR" class="hidden mt-3 items-center justify-center space-x-2 text-xs text-blue-400">
-          <svg class="animate-spin h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
-          <span>Extrayendo datos fiscales con IA...</span>
-        </div>
       </div>
 
       <div id="boxFormGasto" class="hidden bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl">
@@ -117,6 +112,10 @@
           <span>Detalle del Gasto</span>
           <span id="badgeTipoGasto" class="text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded">Comprobante</span>
         </h4>
+        <div id="estadoOCR" class="hidden mb-3 items-center gap-2 text-[11px] text-blue-300 bg-blue-950/40 border border-blue-800/60 rounded-lg p-2">
+          <svg class="animate-spin h-4 w-4 shrink-0 text-blue-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>
+          <span id="estadoOCRTexto">Leyendo el recibo con IA… puedes ir escribiendo los datos.</span>
+        </div>
         <div id="avisoOCR" class="hidden mb-3 text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800/60 rounded-lg p-2"></div>
         <div class="grid grid-cols-2 gap-3 text-xs">
           <div>
@@ -401,62 +400,166 @@
       xhrC.send();
     }
 
-    function procesarFotoOCR(event) {
-      var file = event.target.files[0];
-      if (!file) return;
+    // ---------- Lectura de recibos con IA (Android e iPhone) ----------
+    var solicitudOCR = 0;
+    var xhrOCR = null;
+    var TIEMPO_MAX_OCR_MS = 60000;
+    var LADO_MAX_FOTO = 1600;
 
-      esRegistroManual = false;
-      var loader = document.getElementById('loaderOCR');
-      loader.classList.remove('hidden');
-      loader.classList.add('flex');
+    // Reduce la foto a máx. 1600 px en JPEG (~300 KB) antes de subirla.
+    // Si el navegador no puede decodificarla (p. ej. HEIC en Android), se envía la original.
+    function comprimirImagen(file, cb) {
+      var terminado = false;
+      var finalizar = function(resultado) {
+        if (terminado) return;
+        terminado = true;
+        cb(resultado && resultado.size > 0 && resultado.size < file.size ? resultado : file);
+      };
+      setTimeout(function() { finalizar(file); }, 10000);
 
-      var formData = new FormData();
-      formData.append('comprobante', file);
-
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', BASE_URL + '/api/gastos/analizar', true);
-      xhr.onload = function() {
-        loader.classList.add('hidden');
-        loader.classList.remove('flex');
-        event.target.value = '';
-
-        if (xhr.status === 200) {
-          var data = JSON.parse(xhr.responseText);
-          document.getElementById('boxFormGasto').classList.remove('hidden');
-          document.getElementById('badgeTipoGasto').innerText = 'Comprobante OCR';
-          document.getElementById('badgeTipoGasto').className = 'text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded';
-
-          // Solo se llenan los campos que la IA leyó; los demás quedan vacíos para digitarlos
-          document.getElementById('gastoFecha').value = data.fecha || '';
-          document.getElementById('gastoTotal').value = data.total > 0 ? data.total : '';
-          document.getElementById('gastoEstablecimiento').value = data.establecimiento || '';
-          document.getElementById('gastoNit').value = data.nit || '';
-          document.getElementById('gastoConsecutivo').value = data.consecutivo || '';
-          document.getElementById('gastoObservacion').value = '';
-          seleccionarCategoria(data.categoria || 'Otros');
-
-          var faltantes = [];
-          if (!data.fecha) faltantes.push('fecha');
-          if (!(data.total > 0)) faltantes.push('total');
-          if (!data.establecimiento) faltantes.push('establecimiento');
-          var aviso = '';
-          if (data.ocr_ok === false) {
-            aviso = '⚠️ ' + (data.ocr_error || 'No se pudo leer el recibo.') + ' Digite los datos manualmente.';
-          } else if (faltantes.length) {
-            aviso = '⚠️ No se pudo leer: ' + faltantes.join(', ') + '. Complételos manualmente.';
+      try {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function() {
+          try {
+            var w = img.naturalWidth || img.width;
+            var h = img.naturalHeight || img.height;
+            if (!w || !h) { URL.revokeObjectURL(url); return finalizar(file); }
+            var escala = Math.min(1, LADO_MAX_FOTO / Math.max(w, h));
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.round(w * escala);
+            canvas.height = Math.round(h * escala);
+            var ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            // Los navegadores actuales aplican la rotación EXIF al dibujar la imagen
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            canvas.toBlob(function(blob) { finalizar(blob); }, 'image/jpeg', 0.82);
+          } catch (e) {
+            URL.revokeObjectURL(url);
+            finalizar(file);
           }
-          mostrarAvisoOCR(aviso);
-          if (!(data.total > 0)) document.getElementById('gastoTotal').focus();
-        } else {
-          alert('Error analizando la imagen.');
-        }
-      };
-      xhr.onerror = function() {
-        loader.classList.add('hidden');
-        loader.classList.remove('flex');
-        alert('Error al subir la imagen.');
-      };
-      xhr.send(formData);
+        };
+        img.onerror = function() { URL.revokeObjectURL(url); finalizar(file); };
+        img.src = url;
+      } catch (e) {
+        finalizar(file);
+      }
+    }
+
+    function mostrarEstadoOCR(texto) {
+      var el = document.getElementById('estadoOCR');
+      if (texto) {
+        document.getElementById('estadoOCRTexto').innerText = texto;
+        el.classList.remove('hidden');
+        el.classList.add('flex');
+      } else {
+        el.classList.add('hidden');
+        el.classList.remove('flex');
+      }
+    }
+
+    function cancelarOCR() {
+      solicitudOCR++;
+      if (xhrOCR) { try { xhrOCR.abort(); } catch (e) {} xhrOCR = null; }
+      mostrarEstadoOCR('');
+    }
+
+    // Abre el formulario vacío de inmediato para que el conductor pueda escribir mientras la IA lee
+    function abrirFormularioComprobante() {
+      document.getElementById('boxFormGasto').classList.remove('hidden');
+      document.getElementById('badgeTipoGasto').innerText = 'Comprobante OCR';
+      document.getElementById('badgeTipoGasto').className = 'text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded';
+      ['gastoFecha', 'gastoTotal', 'gastoEstablecimiento', 'gastoNit', 'gastoConsecutivo', 'gastoObservacion'].forEach(function(id) {
+        document.getElementById(id).value = '';
+      });
+      seleccionarCategoria('Otros');
+      mostrarAvisoOCR('');
+      mostrarEstadoOCR('Preparando la foto…');
+      try { document.getElementById('boxFormGasto').scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+    }
+
+    function llenarSiVacio(id, valor) {
+      var el = document.getElementById(id);
+      if (valor && !String(el.value).trim()) el.value = valor;
+    }
+
+    // Aplica solo lo que la IA leyó y no sobrescribe lo que el conductor ya escribió
+    function aplicarDatosOCR(data) {
+      llenarSiVacio('gastoFecha', data.fecha);
+      llenarSiVacio('gastoTotal', data.total > 0 ? data.total : '');
+      llenarSiVacio('gastoEstablecimiento', data.establecimiento);
+      llenarSiVacio('gastoNit', data.nit);
+      llenarSiVacio('gastoConsecutivo', data.consecutivo);
+      if (data.categoria && document.getElementById('gastoCategoria').value === 'Otros') {
+        seleccionarCategoria(data.categoria);
+      }
+
+      var faltantes = [];
+      if (!document.getElementById('gastoFecha').value) faltantes.push('fecha');
+      if (!document.getElementById('gastoTotal').value) faltantes.push('total');
+      if (!document.getElementById('gastoEstablecimiento').value) faltantes.push('establecimiento');
+
+      if (data.ocr_ok === false) {
+        mostrarAvisoOCR('⚠️ ' + (data.ocr_error || 'No se pudo leer el recibo.') + ' Digite los datos manualmente.');
+      } else if (faltantes.length) {
+        mostrarAvisoOCR('⚠️ No se pudo leer: ' + faltantes.join(', ') + '. Complételos manualmente.');
+      } else {
+        mostrarAvisoOCR('');
+      }
+    }
+
+    function procesarFotoOCR(event) {
+      var input = event.target;
+      var file = input.files && input.files[0];
+      if (!file) return;
+      input.value = ''; // permite volver a elegir la misma foto
+
+      cancelarOCR();
+      var id = ++solicitudOCR;
+      esRegistroManual = false;
+      abrirFormularioComprobante();
+
+      comprimirImagen(file, function(imagen) {
+        if (id !== solicitudOCR) return;
+        mostrarEstadoOCR('Leyendo el recibo con IA… puedes ir escribiendo los datos.');
+
+        var formData = new FormData();
+        formData.append('comprobante', imagen, imagen === file ? (file.name || 'recibo.jpg') : 'recibo.jpg');
+
+        var xhr = new XMLHttpRequest();
+        xhrOCR = xhr;
+        xhr.open('POST', BASE_URL + '/api/gastos/analizar', true);
+        xhr.timeout = TIEMPO_MAX_OCR_MS;
+
+        xhr.onload = function() {
+          if (id !== solicitudOCR) return;
+          xhrOCR = null;
+          mostrarEstadoOCR('');
+          var data = null;
+          try { data = JSON.parse(xhr.responseText); } catch (e) {}
+          if (data && (xhr.status === 200 || data.ocr_ok === false)) {
+            aplicarDatosOCR(data);
+          } else {
+            mostrarAvisoOCR('⚠️ El servidor no pudo analizar la foto (código ' + xhr.status + '). Digite los datos manualmente.');
+          }
+          if (!document.getElementById('gastoTotal').value) document.getElementById('gastoTotal').focus();
+        };
+        xhr.ontimeout = function() {
+          if (id !== solicitudOCR) return;
+          xhrOCR = null;
+          mostrarEstadoOCR('');
+          mostrarAvisoOCR('⚠️ La lectura con IA tardó demasiado. Digite los datos manualmente.');
+        };
+        xhr.onerror = function() {
+          if (id !== solicitudOCR) return;
+          xhrOCR = null;
+          mostrarEstadoOCR('');
+          mostrarAvisoOCR('⚠️ Sin conexión con el servidor. Digite los datos y guarde cuando tenga señal.');
+        };
+        xhr.send(formData);
+      });
     }
 
     function mostrarAvisoOCR(texto) {
@@ -483,6 +586,7 @@
     }
 
     function abrirIngresoManual() {
+      cancelarOCR();
       esRegistroManual = true;
       mostrarAvisoOCR('');
       seleccionarCategoria('Otros');
@@ -500,6 +604,7 @@
     }
 
     function cerrarFormGasto() {
+      cancelarOCR();
       document.getElementById('boxFormGasto').classList.add('hidden');
     }
 
