@@ -161,9 +161,13 @@ router.post('/analizar', uploadAnalisis, async (req, res) => {
       return res.status(400).json({ error: 'No se subió ninguna imagen o comprobante' });
     }
 
+    const pucs = await prisma.puc.findMany({ select: { nombre: true } });
+    const categorias = [...new Set(pucs.map(p => p.nombre))];
+
     const datosExtraidos = await analizarComprobanteConGemini(
       archivo.buffer,
-      archivo.mimetype
+      archivo.mimetype,
+      categorias
     );
 
     return res.json(datosExtraidos);
@@ -223,12 +227,18 @@ const guardarGastoHandler = async (req, res) => {
     // Asignación directa y segura de código PUC sin consultar campos inexistentes
     let cta = cuenta_contable;
     if (!cta && categoria) {
+      // Primero la cuenta configurada en la tabla PUC de la empresa
+      const puc = await prisma.puc.findFirst({ where: { empresaId, nombre: String(categoria) } });
+      if (puc) cta = puc.codigo;
+    }
+    if (!cta && categoria) {
       const cat = String(categoria).toLowerCase();
       if (cat.includes('combustible')) cta = '519525';
       else if (cat.includes('peaje')) cta = '519530';
       else if (cat.includes('parqueadero') || cat.includes('lavado')) cta = '519535';
       else if (cat.includes('mantenimiento') || cat.includes('taller')) cta = '514510';
       else if (cat.includes('alimentacion') || cat.includes('viatico')) cta = '519565';
+      else if (cat.includes('bascula') || cat.includes('báscula') || cat.includes('pesaje')) cta = '519595';
       else cta = '519595';
     }
 
@@ -367,13 +377,197 @@ router.get('/viajes-historial', async (req, res) => {
 
     const historial = await prisma.viajeLiquidado.findMany({
       where: whereClause,
-      orderBy: { id: 'desc' }
+      orderBy: { id: 'desc' },
+      include: { pagos: { orderBy: { id: 'asc' } } }
     });
 
-    return res.json(historial);
+    return res.json(historial.map(conSaldoPendiente));
   } catch (error) {
     console.error('Error obteniendo historial:', error);
     return res.status(500).json({ error: 'Error cargando historial' });
+  }
+});
+
+// ---------- Administración de planillas ----------
+
+// saldoFinal < 0: la empresa le debe al conductor; > 0: el conductor debe reintegrar
+function conSaldoPendiente(viaje) {
+  const ajustes = (viaje.pagos || []).reduce(
+    (acc, p) => acc + (p.tipo === 'pago_conductor' ? p.valor : -p.valor),
+    0
+  );
+  const saldoPendiente = Math.round((Number(viaje.saldoFinal) + ajustes) * 100) / 100;
+  return { ...viaje, totalAjustes: ajustes, saldoPendiente };
+}
+
+// 9b. Registrar pago al conductor (saldo negativo) o reintegro del conductor (saldo positivo)
+router.post('/viajes/:id/pagos', async (req, res) => {
+  try {
+    const viajeId = Number(req.params.id);
+    if (!Number.isInteger(viajeId)) {
+      return res.status(400).json({ error: 'ID de planilla inválido' });
+    }
+
+    const viaje = await prisma.viajeLiquidado.findUnique({
+      where: { id: viajeId },
+      include: { pagos: true }
+    });
+    if (!viaje) {
+      return res.status(404).json({ error: 'Planilla no encontrada' });
+    }
+
+    const { saldoPendiente } = conSaldoPendiente(viaje);
+    if (Math.abs(saldoPendiente) < 0.01) {
+      return res.status(400).json({ error: 'La planilla ya está saldada' });
+    }
+
+    const pendienteAbs = Math.abs(saldoPendiente);
+    const valor = req.body.valor === undefined || req.body.valor === '' ? pendienteAbs : Number(req.body.valor);
+    if (!Number.isFinite(valor) || valor <= 0) {
+      return res.status(400).json({ error: 'El valor del pago debe ser mayor a cero' });
+    }
+    if (valor > pendienteAbs + 0.01) {
+      return res.status(400).json({ error: `El valor supera el saldo pendiente ($${pendienteAbs.toLocaleString('es-CO')})` });
+    }
+
+    await prisma.pagoPlanilla.create({
+      data: {
+        viajeId,
+        fecha: fechaComoTexto(req.body.fecha),
+        tipo: saldoPendiente < 0 ? 'pago_conductor' : 'reintegro_conductor',
+        valor,
+        observacion: String(req.body.observacion || '').trim()
+      }
+    });
+
+    const actualizado = await prisma.viajeLiquidado.findUnique({
+      where: { id: viajeId },
+      include: { pagos: { orderBy: { id: 'asc' } } }
+    });
+    return res.status(201).json({ success: true, planilla: conSaldoPendiente(actualizado) });
+  } catch (error) {
+    console.error('Error registrando pago de planilla:', error);
+    return res.status(500).json({ error: 'Error al registrar el pago', detalle: error.message });
+  }
+});
+
+// 9c. Anular un pago registrado por error
+router.delete('/viajes/:id/pagos/:pagoId', async (req, res) => {
+  try {
+    const resultado = await prisma.pagoPlanilla.deleteMany({
+      where: { id: Number(req.params.pagoId), viajeId: Number(req.params.id) }
+    });
+    if (resultado.count === 0) {
+      return res.status(404).json({ error: 'Pago no encontrado en esta planilla' });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Error anulando pago:', error);
+    return res.status(500).json({ error: 'Error al anular el pago' });
+  }
+});
+
+// 9d. Eliminar planilla (p. ej. de prueba) junto con sus gastos y pagos
+router.delete('/viajes/:id', async (req, res) => {
+  try {
+    const viajeId = Number(req.params.id);
+    if (!Number.isInteger(viajeId)) {
+      return res.status(400).json({ error: 'ID de planilla inválido' });
+    }
+
+    const [gastos, , viaje] = await prisma.$transaction([
+      prisma.gasto.deleteMany({ where: { viajeId } }),
+      prisma.pagoPlanilla.deleteMany({ where: { viajeId } }),
+      prisma.viajeLiquidado.deleteMany({ where: { id: viajeId } })
+    ]);
+
+    if (viaje.count === 0) {
+      return res.status(404).json({ error: 'Planilla no encontrada' });
+    }
+    return res.json({ success: true, gastosEliminados: gastos.count });
+  } catch (error) {
+    console.error('Error eliminando planilla:', error);
+    return res.status(500).json({ error: 'Error al eliminar la planilla' });
+  }
+});
+
+// ---------- Administración de conductores ----------
+
+async function obtenerConductorEditable(id, res) {
+  const conductor = await prisma.conductor.findUnique({ where: { id } });
+  if (!conductor) {
+    res.status(404).json({ error: 'Conductor no encontrado' });
+    return null;
+  }
+  if (conductor.rol === 'admin') {
+    res.status(403).json({ error: 'El usuario administrador no se puede modificar desde aquí' });
+    return null;
+  }
+  return conductor;
+}
+
+function contarGastosActivos(nombre) {
+  return prisma.gasto.count({ where: { conductor: nombre, viajeId: null } });
+}
+
+// 9e. Cambiar el conductor asignado a un vehículo (nombre) y/o la placa
+router.patch('/conductores/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'ID de conductor inválido' });
+    }
+    const conductor = await obtenerConductorEditable(id, res);
+    if (!conductor) return;
+
+    const nombre = req.body.nombre !== undefined ? String(req.body.nombre).trim() : conductor.nombre;
+    const placa = req.body.placa !== undefined ? String(req.body.placa).trim().toUpperCase() : conductor.placa;
+    if (!nombre || !placa) {
+      return res.status(400).json({ error: 'El nombre y la placa no pueden quedar vacíos' });
+    }
+
+    // Los gastos se asocian por nombre: cambiar de conductor con un viaje abierto los dejaría huérfanos
+    if (nombre !== conductor.nombre && await contarGastosActivos(conductor.nombre) > 0) {
+      return res.status(409).json({
+        error: `${conductor.nombre} tiene gastos sin liquidar. Liquide su viaje antes de cambiar el conductor.`
+      });
+    }
+
+    const actualizado = await prisma.conductor.update({
+      where: { id },
+      data: { nombre, placa }
+    });
+    return res.json({ success: true, conductor: actualizado });
+  } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Ya existe un conductor con ese nombre en la empresa' });
+    }
+    console.error('Error actualizando conductor:', error);
+    return res.status(500).json({ error: 'Error al actualizar el conductor' });
+  }
+});
+
+// 9f. Eliminar conductor (solo si no tiene anticipo ni gastos pendientes)
+router.delete('/conductores/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'ID de conductor inválido' });
+    }
+    const conductor = await obtenerConductorEditable(id, res);
+    if (!conductor) return;
+
+    if (Number(conductor.anticipo) !== 0 || await contarGastosActivos(conductor.nombre) > 0) {
+      return res.status(409).json({
+        error: `${conductor.nombre} tiene anticipo o gastos sin liquidar. Liquide el viaje antes de eliminarlo.`
+      });
+    }
+
+    await prisma.conductor.delete({ where: { id } });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Error eliminando conductor:', error);
+    return res.status(500).json({ error: 'Error al eliminar el conductor' });
   }
 });
 

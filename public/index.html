@@ -117,6 +117,7 @@
           <span>Detalle del Gasto</span>
           <span id="badgeTipoGasto" class="text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded">Comprobante</span>
         </h4>
+        <div id="avisoOCR" class="hidden mb-3 text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800/60 rounded-lg p-2"></div>
         <div class="grid grid-cols-2 gap-3 text-xs">
           <div>
             <label class="text-slate-400">Fecha</label>
@@ -425,13 +426,27 @@
           document.getElementById('badgeTipoGasto').innerText = 'Comprobante OCR';
           document.getElementById('badgeTipoGasto').className = 'text-[10px] bg-blue-900/60 text-blue-300 border border-blue-700 px-2 py-0.5 rounded';
 
-          document.getElementById('gastoFecha').value = data.fecha || new Date().toISOString().slice(0, 10);
-          document.getElementById('gastoTotal').value = data.total || '';
+          // Solo se llenan los campos que la IA leyó; los demás quedan vacíos para digitarlos
+          document.getElementById('gastoFecha').value = data.fecha || '';
+          document.getElementById('gastoTotal').value = data.total > 0 ? data.total : '';
           document.getElementById('gastoEstablecimiento').value = data.establecimiento || '';
           document.getElementById('gastoNit').value = data.nit || '';
           document.getElementById('gastoConsecutivo').value = data.consecutivo || '';
           document.getElementById('gastoObservacion').value = '';
-          if (data.categoria) document.getElementById('gastoCategoria').value = data.categoria;
+          seleccionarCategoria(data.categoria || 'Otros');
+
+          var faltantes = [];
+          if (!data.fecha) faltantes.push('fecha');
+          if (!(data.total > 0)) faltantes.push('total');
+          if (!data.establecimiento) faltantes.push('establecimiento');
+          var aviso = '';
+          if (data.ocr_ok === false) {
+            aviso = '⚠️ ' + (data.ocr_error || 'No se pudo leer el recibo.') + ' Digite los datos manualmente.';
+          } else if (faltantes.length) {
+            aviso = '⚠️ No se pudo leer: ' + faltantes.join(', ') + '. Complételos manualmente.';
+          }
+          mostrarAvisoOCR(aviso);
+          if (!(data.total > 0)) document.getElementById('gastoTotal').focus();
         } else {
           alert('Error analizando la imagen.');
         }
@@ -444,8 +459,33 @@
       xhr.send(formData);
     }
 
+    function mostrarAvisoOCR(texto) {
+      var el = document.getElementById('avisoOCR');
+      el.innerText = texto || '';
+      el.classList.toggle('hidden', !texto);
+    }
+
+    function seleccionarCategoria(nombre) {
+      var sel = document.getElementById('gastoCategoria');
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === nombre) { sel.value = nombre; return; }
+      }
+      for (var j = 0; j < sel.options.length; j++) {
+        if (sel.options[j].value === 'Otros') { sel.value = 'Otros'; return; }
+      }
+    }
+
+    function textoError(xhr, porDefecto) {
+      try {
+        var r = JSON.parse(xhr.responseText);
+        return r.error || porDefecto;
+      } catch (e) { return porDefecto; }
+    }
+
     function abrirIngresoManual() {
       esRegistroManual = true;
+      mostrarAvisoOCR('');
+      seleccionarCategoria('Otros');
       document.getElementById('boxFormGasto').classList.remove('hidden');
       document.getElementById('badgeTipoGasto').innerText = 'Ingreso Manual';
       document.getElementById('badgeTipoGasto').className = 'text-[10px] bg-amber-900/60 text-amber-300 border border-amber-700 px-2 py-0.5 rounded';
@@ -466,6 +506,7 @@
     function guardarGastoConfirmado() {
       var total = parseFloat(document.getElementById('gastoTotal').value);
       if (!total || total <= 0) return alert('Por favor ingrese un total válido.');
+      if (!document.getElementById('gastoFecha').value) return alert('Por favor ingrese la fecha del recibo.');
 
       var cond = null;
       for (var i = 0; i < conductoresMemoria.length; i++) {
@@ -587,6 +628,21 @@
             '</div>' +
           '</div>';
 
+          var pagos = viaje.pagos || [];
+          var pendiente = Number(viaje.saldoPendiente !== undefined ? viaje.saldoPendiente : viaje.saldoFinal);
+          if (pagos.length > 0) {
+            html += '<h5 class="font-bold text-white mt-3 mb-2">Pagos y Reintegros del Administrador:</h5><div class="space-y-1">';
+            for (var p = 0; p < pagos.length; p++) {
+              var pg = pagos[p];
+              html += '<div class="bg-slate-900/50 border border-slate-700/60 p-2 rounded-lg flex justify-between">' +
+                '<span class="text-slate-300">' + pg.fecha + ' • ' + (pg.tipo === 'pago_conductor' ? 'Pago al conductor' : 'Reintegro del conductor') +
+                (pg.observacion ? ' • ' + pg.observacion : '') + '</span>' +
+                '<strong class="text-blue-400">' + pesos(pg.valor) + '</strong></div>';
+            }
+            html += '</div>';
+          }
+          html += '<p class="text-[11px] font-semibold mt-2">' + etiquetaSaldo(pendiente) + '</p>';
+
           html += '<h5 class="font-bold text-white mt-3 mb-2">Comprobantes y Observaciones Registradas:</h5>';
           html += '<div class="space-y-2 max-h-56 overflow-y-auto">';
           for (var j = 0; j < gastos.length; j++) {
@@ -623,8 +679,10 @@
             '<td class="p-2.5 font-semibold text-white">' + c.nombre + '</td>' +
             '<td class="p-2.5 text-blue-400 font-mono">' + c.placa + '</td>' +
             '<td class="p-2.5 text-emerald-400 font-bold">$' + Number(c.anticipo).toLocaleString('es-CO') + '</td>' +
-            '<td class="p-2.5 text-right space-x-1">' +
+            '<td class="p-2.5 text-right whitespace-nowrap space-x-1">' +
               '<button onclick="asignarAnticipoPrompt(' + c.id + ', ' + c.anticipo + ')" class="bg-blue-600/80 hover:bg-blue-500 text-[10px] px-2 py-1 rounded">Asignar Anticipo</button>' +
+              '<button onclick="editarConductor(' + c.id + ')" class="bg-amber-600/80 hover:bg-amber-500 text-[10px] px-2 py-1 rounded">Cambiar</button>' +
+              '<button onclick="eliminarConductor(' + c.id + ')" class="bg-red-700/80 hover:bg-red-600 text-[10px] px-2 py-1 rounded">Eliminar</button>' +
             '</td></tr>';
         }
       }
@@ -644,13 +702,21 @@
             var html = '';
             for (var i = 0; i < viajes.length; i++) {
               var v = viajes[i];
-              html += '<div class="bg-slate-900/80 border border-slate-700/80 p-3 rounded-xl text-xs flex justify-between items-center">' +
+              var pendiente = Number(v.saldoPendiente !== undefined ? v.saldoPendiente : v.saldoFinal);
+              html += '<div class="bg-slate-900/80 border border-slate-700/80 p-3 rounded-xl text-xs flex flex-wrap gap-2 justify-between items-center">' +
                 '<div>' +
                   '<p class="font-bold text-white">Planilla #' + v.id + ' • ' + v.conductor + ' (' + v.placa + ')</p>' +
                   '<p class="text-[10px] text-slate-400">Fecha: ' + v.fechaCierre + ' • Anticipo: $' + Number(v.anticipoTotal).toLocaleString('es-CO') + ' • Gastos: $' + Number(v.gastosTotal).toLocaleString('es-CO') + '</p>' +
                   '<p class="text-[11px] font-semibold text-emerald-400">Saldo Liquidado: $' + Number(v.saldoFinal).toLocaleString('es-CO') + '</p>' +
+                  '<p class="text-[11px] font-semibold">' + etiquetaSaldo(pendiente) + '</p>' +
                 '</div>' +
-                '<button onclick="verPlanilla(' + v.id + ')" class="bg-emerald-600/80 hover:bg-emerald-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Ver Planilla Completa</button>' +
+                '<div class="flex flex-wrap gap-1 justify-end">' +
+                  (Math.abs(pendiente) >= 0.01
+                    ? '<button onclick="registrarPagoPlanilla(' + v.id + ', ' + pendiente + ')" class="bg-blue-600/80 hover:bg-blue-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">' + (pendiente < 0 ? 'Pagar al Conductor' : 'Registrar Reintegro') + '</button>'
+                    : '') +
+                  '<button onclick="verPlanilla(' + v.id + ')" class="bg-emerald-600/80 hover:bg-emerald-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Ver Planilla</button>' +
+                  '<button onclick="eliminarPlanilla(' + v.id + ')" class="bg-red-700/80 hover:bg-red-600 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Eliminar</button>' +
+                '</div>' +
               '</div>';
             }
             cont.innerHTML = html;
@@ -680,6 +746,99 @@
         alert('No se pudo conectar con el servidor');
       };
       xhr.send(JSON.stringify({ anticipo: parseFloat(nuevo) || 0 }));
+    }
+
+    function pesos(n) {
+      return '$' + Number(Math.abs(n)).toLocaleString('es-CO');
+    }
+
+    function etiquetaSaldo(pendiente) {
+      if (Math.abs(pendiente) < 0.01) return '<span class="text-emerald-400">✔ Planilla saldada</span>';
+      if (pendiente < 0) return '<span class="text-amber-400">Pendiente por pagar al conductor: ' + pesos(pendiente) + '</span>';
+      return '<span class="text-amber-400">Pendiente de reintegro del conductor: ' + pesos(pendiente) + '</span>';
+    }
+
+    function refrescarAdmin() {
+      cargarConductoresPorEmpresa();
+      cargarHistoricoViajesAdmin();
+      setTimeout(renderAdminConductores, 400);
+    }
+
+    function registrarPagoPlanilla(id, pendiente) {
+      var texto = pendiente < 0
+        ? 'Valor pagado al conductor (pendiente ' + pesos(pendiente) + '):'
+        : 'Valor reintegrado por el conductor (pendiente ' + pesos(pendiente) + '):';
+      var valor = prompt(texto, Math.abs(pendiente));
+      if (valor === null) return;
+      var monto = parseFloat(String(valor).replace(/[^\d.]/g, ''));
+      if (!monto || monto <= 0) return alert('Ingrese un valor válido.');
+      var obs = prompt('Observación (opcional): ej. transferencia, efectivo, comprobante...', '');
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', BASE_URL + '/api/gastos/viajes/' + id + '/pagos', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onload = function() {
+        if (xhr.status >= 400) return alert(textoError(xhr, 'Error al registrar el pago.'));
+        alert('Pago registrado en la planilla #' + id + '.');
+        cargarHistoricoViajesAdmin();
+      };
+      xhr.onerror = function() { alert('No se pudo conectar con el servidor.'); };
+      xhr.send(JSON.stringify({ valor: monto, observacion: obs || '' }));
+    }
+
+    function eliminarPlanilla(id) {
+      if (!confirm('¿Eliminar la planilla #' + id + '?\n\nSe borrarán también sus gastos y pagos. Esta acción no se puede deshacer.')) return;
+      var xhr = new XMLHttpRequest();
+      xhr.open('DELETE', BASE_URL + '/api/gastos/viajes/' + id, true);
+      xhr.onload = function() {
+        if (xhr.status >= 400) return alert(textoError(xhr, 'Error al eliminar la planilla.'));
+        cargarHistoricoViajesAdmin();
+      };
+      xhr.onerror = function() { alert('No se pudo conectar con el servidor.'); };
+      xhr.send();
+    }
+
+    function buscarConductorMemoria(id) {
+      for (var i = 0; i < conductoresMemoria.length; i++) {
+        if (conductoresMemoria[i].id === id) return conductoresMemoria[i];
+      }
+      return null;
+    }
+
+    function editarConductor(id) {
+      var c = buscarConductorMemoria(id);
+      if (!c) return;
+      var nombre = prompt('Conductor asignado al vehículo ' + c.placa + ':', c.nombre);
+      if (nombre === null) return;
+      var placa = prompt('Placa del vehículo:', c.placa);
+      if (placa === null) return;
+      nombre = nombre.trim();
+      placa = placa.trim().toUpperCase();
+      if (!nombre || !placa) return alert('El nombre y la placa no pueden quedar vacíos.');
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('PATCH', BASE_URL + '/api/gastos/conductores/' + id, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onload = function() {
+        if (xhr.status >= 400) return alert(textoError(xhr, 'Error al actualizar el conductor.'));
+        refrescarAdmin();
+      };
+      xhr.onerror = function() { alert('No se pudo conectar con el servidor.'); };
+      xhr.send(JSON.stringify({ nombre: nombre, placa: placa }));
+    }
+
+    function eliminarConductor(id) {
+      var c = buscarConductorMemoria(id);
+      if (!c) return;
+      if (!confirm('¿Eliminar al conductor ' + c.nombre + ' (' + c.placa + ')?\n\nSus planillas liquidadas se conservan en el historial.')) return;
+      var xhr = new XMLHttpRequest();
+      xhr.open('DELETE', BASE_URL + '/api/gastos/conductores/' + id, true);
+      xhr.onload = function() {
+        if (xhr.status >= 400) return alert(textoError(xhr, 'Error al eliminar el conductor.'));
+        refrescarAdmin();
+      };
+      xhr.onerror = function() { alert('No se pudo conectar con el servidor.'); };
+      xhr.send();
     }
 
     function descargarPlanoContable() {

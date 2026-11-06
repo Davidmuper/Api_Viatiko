@@ -74,4 +74,19 @@ model ViajeLiquidado {
   gastosTotal     Float
   saldoFinal      Float
   resumenGastos   String           @default("[]")
+  pagos           PagoPlanilla[]
+}
+
+// Pagos o reintegros que registra el administrador para dejar la planilla en saldo 0.
+// tipo 'pago_conductor': la empresa le paga al conductor (saldo negativo).
+// tipo 'reintegro_conductor': el conductor devuelve dinero a la empresa (saldo positivo).
+model PagoPlanilla {
+  id              Int              @id @default(autoincrement())
+  viajeId         Int
+  viaje           ViajeLiquidado   @relation(fields: [viajeId], references: [id], onDelete: Cascade)
+  fecha           String
+  tipo            String
+  valor           Float
+  observacion     String           @default("")
+  createdAt       DateTime         @default(now())
 }

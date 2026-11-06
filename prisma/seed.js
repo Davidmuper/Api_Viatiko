@@ -68,7 +68,9 @@ async function main() {
     { nombre: 'Mantenimiento / Taller', codigo: '514510' },
     { nombre: 'Hospedaje / Alimentación', codigo: '519595' },
     { nombre: 'Cargue / Descargue', codigo: '519535' },
-    { nombre: 'Parqueadero / Lavado', codigo: '519540' }
+    { nombre: 'Parqueadero / Lavado', codigo: '519540' },
+    { nombre: 'Báscula', codigo: '519595' },
+    { nombre: 'Otros', codigo: '519595' }
   ];
 
   for (const p of pucs) {
