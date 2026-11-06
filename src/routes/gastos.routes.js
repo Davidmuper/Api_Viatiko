@@ -134,12 +134,13 @@ router.post('/analizar', uploadAnalisis, async (req, res) => {
   }
 });
 
-// 6. Consultar gastos activos del viaje en curso
+// 6. Consultar gastos activos del viaje en curso (solo sin liquidar)
 router.get('/', async (req, res) => {
   try {
-    const { conductor, empresa } = req.query;
+    const { conductor } = req.query;
     const whereClause = {
-      ...(conductor ? { conductor: String(conductor) } : {})
+      ...(conductor ? { conductor: String(conductor) } : {}),
+      viajeId: null
     };
 
     const gastos = await prisma.gasto.findMany({
@@ -149,7 +150,7 @@ router.get('/', async (req, res) => {
 
     return res.json(gastos);
   } catch (error) {
-    console.error('Error listando gastos:', error);
+    console.error('Error listando gastos activos:', error);
     return res.status(500).json({ error: 'Error obteniendo los gastos' });
   }
 });
@@ -207,27 +208,36 @@ router.post('/gastos', guardarGastoHandler);
 // 8. Finalizar liquidación de viaje y reiniciar anticipo
 router.post('/finalizar-liquidacion', async (req, res) => {
   try {
-    const { conductorId, conductor, placa, empresa } = req.body;
+    const { conductorId, conductor, usuario, placa, empresa } = req.body;
 
-    let targetConductor;
+    const nombreBuscado = conductor || usuario;
+
+    let targetConductor = null;
     if (conductorId) {
       targetConductor = await prisma.conductor.findUnique({
         where: { id: Number(conductorId) }
       });
-    } else if (conductor) {
+    } else if (nombreBuscado) {
       targetConductor = await prisma.conductor.findFirst({
-        where: { nombre: conductor }
+        where: { nombre: { contains: nombreBuscado, mode: 'insensitive' } }
+      });
+    }
+
+    if (!targetConductor && placa) {
+      targetConductor = await prisma.conductor.findFirst({
+        where: { placa: placa }
       });
     }
 
     if (!targetConductor) {
-      return res.status(404).json({ error: 'Conductor no encontrado' });
+      return res.status(404).json({ error: 'Conductor no encontrado para liquidar' });
     }
 
-    // Buscar gastos activos asociados
+    // Buscar gastos activos (no asociados a un viaje anterior)
     const gastosActivos = await prisma.gasto.findMany({
       where: {
-        conductor: targetConductor.nombre
+        conductor: targetConductor.nombre,
+        viajeId: null
       }
     });
 
@@ -246,7 +256,19 @@ router.post('/finalizar-liquidacion', async (req, res) => {
       }
     });
 
-    // Resetear anticipo a 0
+    // Vincular los gastos activos a la liquidación para sacarlos del viaje en curso
+    if (gastosActivos.length > 0) {
+      await prisma.gasto.updateMany({
+        where: {
+          id: { in: gastosActivos.map(g => g.id) }
+        },
+        data: {
+          viajeId: viajeLiquidado.id
+        }
+      });
+    }
+
+    // Restablecer anticipo del conductor a 0
     await prisma.conductor.update({
       where: { id: targetConductor.id },
       data: { anticipo: 0 }
@@ -254,12 +276,15 @@ router.post('/finalizar-liquidacion', async (req, res) => {
 
     return res.json({
       success: true,
-      mensaje: 'Viaje liquidado exitosamente',
+      mensaje: 'Viaje liquidado con éxito',
       liquidacion: viajeLiquidado
     });
   } catch (error) {
-    console.error('Error finalizando liquidacion:', error);
-    return res.status(500).json({ error: 'Error al procesar la liquidación' });
+    console.error('Error detallado finalizando liquidacion:', error);
+    return res.status(500).json({ 
+      error: 'Error al procesar la liquidación',
+      detalle: error.message 
+    });
   }
 });
 
@@ -309,8 +334,4 @@ router.get('/exportar-contable', async (req, res) => {
     return res.send(bufferExcel);
   } catch (error) {
     console.error('Error generando plano contable:', error);
-    return res.status(500).json({ error: 'Error al exportar los datos contables' });
-  }
-});
-
-export default router;
+    return
