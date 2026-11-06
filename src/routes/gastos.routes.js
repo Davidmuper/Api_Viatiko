@@ -168,8 +168,7 @@ const guardarGastoHandler = async (req, res) => {
       cuenta_contable,
       total,
       placa,
-      conductor,
-      observacion
+      conductor
     } = req.body;
 
     let cta = cuenta_contable;
@@ -208,7 +207,7 @@ router.post('/gastos', guardarGastoHandler);
 // 8. Finalizar liquidación de viaje y reiniciar anticipo
 router.post('/finalizar-liquidacion', async (req, res) => {
   try {
-    const { conductorId, conductor, usuario, placa, empresa } = req.body;
+    const { conductorId, conductor, usuario, placa } = req.body;
 
     const nombreBuscado = conductor || usuario;
 
@@ -233,7 +232,7 @@ router.post('/finalizar-liquidacion', async (req, res) => {
       return res.status(404).json({ error: 'Conductor no encontrado para liquidar' });
     }
 
-    // Buscar gastos activos (no asociados a un viaje anterior)
+    // Buscar gastos activos pendientes de este conductor
     const gastosActivos = await prisma.gasto.findMany({
       where: {
         conductor: targetConductor.nombre,
@@ -256,7 +255,7 @@ router.post('/finalizar-liquidacion', async (req, res) => {
       }
     });
 
-    // Vincular los gastos activos a la liquidación para sacarlos del viaje en curso
+    // Vincular los gastos activos a la liquidación para que salgan del viaje en curso
     if (gastosActivos.length > 0) {
       await prisma.gasto.updateMany({
         where: {
@@ -334,4 +333,8 @@ router.get('/exportar-contable', async (req, res) => {
     return res.send(bufferExcel);
   } catch (error) {
     console.error('Error generando plano contable:', error);
-    return
+    return res.status(500).json({ error: 'Error al exportar los datos contables' });
+  }
+});
+
+export default router;
