@@ -35,6 +35,36 @@ router.get('/conductores', async (req, res) => {
   }
 });
 
+// 1b. Actualizar el anticipo de un conductor por ID
+router.patch('/conductores/:id/anticipo', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const anticipo = Number(req.body.anticipo);
+
+    if (!Number.isInteger(id) || !Number.isFinite(anticipo) || anticipo < 0) {
+      return res.status(400).json({ error: 'ID de conductor o valor de anticipo inválido' });
+    }
+
+    const conductor = await prisma.conductor.update({
+      where: { id },
+      data: { anticipo }
+    });
+
+    return res.json({
+      status: 'success',
+      mensaje: 'Anticipo actualizado correctamente',
+      conductor: conductor.nombre,
+      nuevoAnticipo: conductor.anticipo
+    });
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Conductor no encontrado' });
+    }
+    console.error('Error al actualizar anticipo:', error);
+    return res.status(500).json({ error: 'Error interno al actualizar el anticipo' });
+  }
+});
+
 // 2. Obtener cuentas PUC
 router.get('/puc', async (req, res) => {
   try {
