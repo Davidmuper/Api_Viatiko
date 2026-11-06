@@ -54,7 +54,7 @@ export function configuracionRapida(nombreModelo) {
   return {};
 }
 const TIEMPO_MINIMO_INTENTO_MS = 4000;
-const MAX_DESCUBIERTOS = 2;
+const MAX_DESCUBIERTOS = 3;
 
 const URL_LISTA_MODELOS ='https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000';
 const TTL_CACHE_MS = 60 * 60 * 1000;
@@ -107,6 +107,16 @@ const estaNoDisponible = (nombre) => {
   modelosNoDisponibles.delete(nombre);
   return false;
 };
+
+// Elige qué modelos compiten en paralelo: los dos "flash" más nuevos y el "flash-lite" más
+// nuevo (el más rápido). Los "pro" solo entran si no hay ningún flash.
+export function elegirCandidatos(disponibles) {
+  const flash = disponibles.filter(m => /flash/.test(m) && !/lite/.test(m));
+  const lite = disponibles.filter(m => /flash/.test(m) && /lite/.test(m));
+  const elegidos = [...flash.slice(0, 2), ...lite.slice(0, 1)];
+  const resto = disponibles.filter(m => !elegidos.includes(m));
+  return [...elegidos, ...resto].slice(0, MAX_DESCUBIERTOS);
+}
 
 const esModeloNoDisponible = (err) =>
   /\b404\b|not found|no longer available|is not supported|deprecated/i.test(String(err?.message || ''));
@@ -250,7 +260,6 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
 
   const errores = [];
   const intentados = new Set();
-  let descubiertos = false;
 
   // Límite total para que la petición nunca se quede colgada
   const limite = Date.now() + TIEMPO_TOTAL_MS;
@@ -286,51 +295,53 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
     }
   };
 
-  const configurados = modelosConfigurados();
-  const cola = configurados.filter(m => !estaNoDisponible(m));
-  // Si todos los preferidos están marcados como retirados, se pasa directo a los descubiertos
-  if (cola.length < configurados.length && cacheModelos.lista) {
-    descubiertos = true;
-    cola.push(...cacheModelos.lista.filter(m => !estaNoDisponible(m)).slice(0, MAX_DESCUBIERTOS));
-  }
-  while (cola.length > 0) {
-    if (limite - Date.now() < TIEMPO_MINIMO_INTENTO_MS) {
-      errores.push('Tiempo de lectura agotado');
-      break;
-    }
-    const nombreModelo = cola.shift();
-    if (intentados.has(nombreModelo)) continue;
+  const resultadoOk = (datos, nombreModelo) => ({
+    fecha: normalizarFecha(datos.fecha),
+    establecimiento: String(datos.establecimiento || '').trim(),
+    nit: String(datos.nit || '').trim(),
+    consecutivo: String(datos.consecutivo || '').trim(),
+    categoria: elegirCategoria(datos.categoria, listaCategorias),
+    total: normalizarTotal(datos.total),
+    placa: String(datos.placa || '').toUpperCase().trim(),
+    conductor: '',
+    ocr_ok: true,
+    modelo: nombreModelo
+  });
+
+  // Prueba un grupo de modelos AL MISMO TIEMPO y devuelve el primero que responda bien
+  const competir = async (modelos) => {
+    const candidatos = modelos.filter(m => !intentados.has(m));
+    if (candidatos.length === 0 || limite - Date.now() < TIEMPO_MINIMO_INTENTO_MS) return null;
     try {
-      const datos = await intentarModelo(nombreModelo);
-
-      return {
-        fecha: normalizarFecha(datos.fecha),
-        establecimiento: String(datos.establecimiento || '').trim(),
-        nit: String(datos.nit || '').trim(),
-        consecutivo: String(datos.consecutivo || '').trim(),
-        categoria: elegirCategoria(datos.categoria, listaCategorias),
-        total: normalizarTotal(datos.total),
-        placa: String(datos.placa || '').toUpperCase().trim(),
-        conductor: '',
-        ocr_ok: true,
-        modelo: nombreModelo
-      };
-    } catch (err) {
-      console.warn(`Gemini ${nombreModelo} falló: ${err.message}`);
-      errores.push(`${nombreModelo}: ${err.message}`);
-
-      // Modelo retirado o no habilitado para la key: se descubren los disponibles (una sola vez)
-      if (esModeloNoDisponible(err)) marcarNoDisponible(nombreModelo);
-      if (esModeloNoDisponible(err) && !descubiertos) {
-        descubiertos = true;
+      return await Promise.any(candidatos.map(async (nombreModelo) => {
         try {
-          const disponibles = await descubrirModelos();
-          cola.push(...disponibles.filter(m => !intentados.has(m)).slice(0, MAX_DESCUBIERTOS));
-        } catch (errLista) {
-          console.warn(`No se pudo consultar ListModels: ${errLista.message}`);
-          errores.push(errLista.message);
+          return resultadoOk(await intentarModelo(nombreModelo), nombreModelo);
+        } catch (err) {
+          console.warn(`Gemini ${nombreModelo} falló: ${err.message}`);
+          errores.push(`${nombreModelo}: ${err.message}`);
+          if (esModeloNoDisponible(err)) marcarNoDisponible(nombreModelo);
+          throw err;
         }
-      }
+      }));
+    } catch {
+      return null;
+    }
+  };
+
+  // 1) Modelos configurados que no se sabe que estén retirados
+  const configurados = modelosConfigurados().filter(m => !estaNoDisponible(m));
+  let resultado = await competir(configurados);
+  if (resultado) return resultado;
+
+  // 2) Modelos que la API key realmente tiene habilitados (consulta cacheada 1 hora)
+  if (limite - Date.now() >= TIEMPO_MINIMO_INTENTO_MS) {
+    try {
+      const disponibles = (await descubrirModelos()).filter(m => !estaNoDisponible(m));
+      resultado = await competir(elegirCandidatos(disponibles));
+      if (resultado) return resultado;
+    } catch (errLista) {
+      console.warn(`No se pudo consultar ListModels: ${errLista.message}`);
+      errores.push(errLista.message);
     }
   }
 
@@ -343,4 +354,80 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
       ? 'La lectura con IA tardó demasiado.'
       : 'No se pudo leer el recibo con IA. ' + (errores[errores.length - 1] || '').slice(0, 250)
   };
+}
+
+// ---------- Diagnóstico (GET /api/gastos/diagnostico-ocr) ----------
+// Prueba con la API key real del servidor cada modelo candidato, en paralelo, con y sin la
+// configuración rápida, y reporta cuánto tardó cada uno. No usa el SDK: llama la API REST
+// directamente para ver el error exacto de Google.
+
+const PNG_PRUEBA = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+async function probarModeloRest(modelo, extras, timeoutMs) {
+  const inicio = Date.now();
+  try {
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelo)}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        signal: AbortSignal.timeout(timeoutMs),
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: 'Responde solo este JSON: {"ok": true}' },
+              { inlineData: { mimeType: 'image/png', data: PNG_PRUEBA } }
+            ]
+          }],
+          generationConfig: { responseMimeType: 'application/json', temperature: 0, ...extras }
+        })
+      }
+    );
+    const cuerpo = await resp.json().catch(() => ({}));
+    const ms = Date.now() - inicio;
+    if (!resp.ok) {
+      return { ok: false, ms, http: resp.status, error: String(cuerpo?.error?.message || resp.statusText).slice(0, 200) };
+    }
+    const texto = cuerpo?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+    return { ok: true, ms, respuesta: texto.slice(0, 60), tokens: cuerpo?.usageMetadata?.totalTokenCount };
+  } catch (err) {
+    const ms = Date.now() - inicio;
+    const agotado = err.name === 'TimeoutError' || err.name === 'AbortError';
+    return { ok: false, ms, error: agotado ? `Sin respuesta en ${timeoutMs / 1000} s` : err.message };
+  }
+}
+
+export async function diagnosticarGemini() {
+  const informe = {
+    fecha: new Date().toISOString(),
+    apiKeyConfigurada: Boolean(apiKey),
+    variableGEMINI_MODELS: process.env.GEMINI_MODELS || '(no definida)',
+    modelosConfigurados: modelosConfigurados()
+  };
+  if (!apiKey) return informe;
+
+  try {
+    cacheModelos = { lista: null, expira: 0 };
+    const disponibles = await descubrirModelos();
+    informe.modelosDisponibles = disponibles;
+    const aProbar = [...new Set([...informe.modelosConfigurados, ...elegirCandidatos(disponibles), ...disponibles.filter(m => /flash/.test(m)).slice(0, 4)])];
+
+    const pruebas = await Promise.all(aProbar.flatMap(modelo => {
+      const extras = configuracionRapida(modelo);
+      const casos = [probarModeloRest(modelo, {}, 30000).then(r => ({ modelo, configuracion: 'normal', ...r }))];
+      if (Object.keys(extras).length) {
+        casos.push(probarModeloRest(modelo, extras, 30000).then(r => ({ modelo, configuracion: 'rapida', ...r })));
+      }
+      return casos;
+    }));
+    informe.pruebas = pruebas.sort((a, b) => (b.ok - a.ok) || a.ms - b.ms);
+    const mejor = informe.pruebas.find(p => p.ok);
+    informe.recomendacion = mejor
+      ? `Configure en Render GEMINI_MODELS=${mejor.modelo} (respondió en ${mejor.ms} ms con configuración ${mejor.configuracion}).`
+      : 'Ningún modelo respondió. Revise la API key, la facturación o las cuotas en Google AI Studio.';
+  } catch (err) {
+    informe.errorListModels = err.message;
+  }
+  return informe;
 }

@@ -2,7 +2,7 @@
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
-import { analizarComprobanteConGemini } from '../services/gemini.service.js';
+import { analizarComprobanteConGemini, diagnosticarGemini } from '../services/gemini.service.js';
 import { generarExportacionContable } from '../services/excel.service.js';
 
 const router = Router();
@@ -194,6 +194,17 @@ router.patch('/conductores/:id/anticipo', async (req, res) => {
 });
 
 // 5. Analizar comprobante con Gemini OCR
+// Diagnóstico de la IA: prueba cada modelo de Gemini con la API key del servidor
+router.get('/diagnostico-ocr', async (req, res) => {
+  try {
+    const informe = await diagnosticarGemini();
+    return res.json(informe);
+  } catch (error) {
+    console.error('Error en diagnóstico OCR:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // Errores de carga (archivo muy grande, campo inesperado) como JSON en lugar de página HTML
 function recibirComprobante(req, res, next) {
   uploadAnalisis(req, res, (err) => {
