@@ -13,6 +13,45 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
+const EMPRESA_POR_DEFECTO = 'Petroquímicos S.A.';
+
+/**
+ * Determina el empresaId obligatorio para Gasto y ViajeLiquidado.
+ * Prioridad: empresa recibida (ID o nombre) → empresa del conductor → empresa de la placa
+ * → empresa por defecto → primera empresa registrada.
+ */
+async function resolverEmpresaId({ empresa, conductor, placa } = {}) {
+  if (empresa !== undefined && empresa !== null && String(empresa).trim() !== '') {
+    const valor = String(empresa).trim();
+    const registro = /^\d+$/.test(valor)
+      ? await prisma.empresa.findUnique({ where: { id: Number(valor) } })
+      : await prisma.empresa.findFirst({ where: { nombre: { equals: valor, mode: 'insensitive' } } });
+    if (registro) return registro.id;
+  }
+
+  if (conductor) {
+    const c = await prisma.conductor.findFirst({ where: { nombre: String(conductor) } });
+    if (c) return c.empresaId;
+  }
+
+  if (placa) {
+    const c = await prisma.conductor.findFirst({ where: { placa: String(placa) } });
+    if (c) return c.empresaId;
+  }
+
+  const porDefecto = await prisma.empresa.findFirst({ where: { nombre: EMPRESA_POR_DEFECTO } })
+    || await prisma.empresa.findFirst({ orderBy: { id: 'asc' } });
+  return porDefecto ? porDefecto.id : null;
+}
+
+// El esquema guarda la fecha como String 'YYYY-MM-DD'
+function fechaComoTexto(valor) {
+  const fecha = valor ? new Date(valor) : new Date();
+  return Number.isNaN(fecha.getTime())
+    ? new Date().toISOString().slice(0, 10)
+    : fecha.toISOString().slice(0, 10);
+}
+
 // Acepta el archivo tanto si el frontend envía 'comprobante' como si envía 'imagen'
 const uploadAnalisis = upload.fields([
   { name: 'comprobante', maxCount: 1 },
@@ -159,6 +198,8 @@ router.get('/', async (req, res) => {
 const guardarGastoHandler = async (req, res) => {
   try {
     const {
+      empresa,
+      empresaId: empresaIdBody,
       viajeId,
       fecha,
       establecimiento,
@@ -168,8 +209,16 @@ const guardarGastoHandler = async (req, res) => {
       cuenta_contable,
       total,
       placa,
-      conductor
+      conductor,
+      metodo,
+      tipo_registro,
+      observacion
     } = req.body;
+
+    const empresaId = await resolverEmpresaId({ empresa: empresaIdBody ?? empresa, conductor, placa });
+    if (!empresaId) {
+      return res.status(400).json({ error: 'No hay ninguna empresa registrada para asociar el gasto' });
+    }
 
     // Asignación directa y segura de código PUC sin consultar campos inexistentes
     let cta = cuenta_contable;
@@ -185,8 +234,9 @@ const guardarGastoHandler = async (req, res) => {
 
     const nuevoGasto = await prisma.gasto.create({
       data: {
+        empresaId,
         viajeId: viajeId ? Number(viajeId) : null,
-        fecha: fecha ? new Date(fecha) : new Date(),
+        fecha: fechaComoTexto(fecha),
         establecimiento: establecimiento || 'Sin nombre',
         nit: nit || 'Sin NIT',
         consecutivo: consecutivo || 'S/N',
@@ -194,7 +244,10 @@ const guardarGastoHandler = async (req, res) => {
         cuenta_contable: cta || '519595',
         total: Number(total) || 0,
         placa: placa || '',
-        conductor: conductor || ''
+        conductor: conductor || '',
+        metodo: metodo || 'Efectivo',
+        tipo_registro: tipo_registro || 'comprobante',
+        observacion: observacion || ''
       }
     });
 
@@ -248,14 +301,29 @@ router.post('/finalizar-liquidacion', async (req, res) => {
     const anticipoInicial = Number(targetConductor.anticipo) || 0;
     const saldo = anticipoInicial - totalGastos;
 
-    // Crear registro en ViajeLiquidado
+    // Crear registro en ViajeLiquidado (campos según prisma/schema.prisma)
+    const resumenGastos = gastosActivos.map(g => ({
+      id: g.id,
+      fecha: g.fecha,
+      establecimiento: g.establecimiento,
+      nit: g.nit,
+      consecutivo: g.consecutivo,
+      categoria: g.categoria,
+      cuenta_contable: g.cuenta_contable,
+      total: g.total,
+      observacion: g.observacion
+    }));
+
     const viajeLiquidado = await prisma.viajeLiquidado.create({
       data: {
+        empresaId: targetConductor.empresaId,
+        fechaCierre: fechaComoTexto(),
         conductor: targetConductor.nombre,
-        vehiculo: placa || targetConductor.placa || 'FLOTA',
-        anticipo: anticipoInicial,
-        totalGastos: totalGastos,
-        saldo: saldo
+        placa: placa || targetConductor.placa || 'FLOTA',
+        anticipoTotal: anticipoInicial,
+        gastosTotal: totalGastos,
+        saldoFinal: saldo,
+        resumenGastos: JSON.stringify(resumenGastos)
       }
     });
 

@@ -496,8 +496,17 @@
           cerrarFormGasto();
           cargarDatosConductor(usuarioActual);
         } else {
-          alert('Error al guardar el gasto.');
+          var msg = 'Error al guardar el gasto.';
+          try {
+            var r = JSON.parse(xhr.responseText);
+            if (r.error) msg += '\n' + r.error;
+            if (r.detalle) msg += '\n' + String(r.detalle).slice(0, 300);
+          } catch (e) {}
+          alert(msg);
         }
+      };
+      xhr.onerror = function() {
+        alert('No se pudo conectar con el servidor para guardar el gasto.');
       };
       xhr.send(JSON.stringify(payload));
     }

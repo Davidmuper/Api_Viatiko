@@ -54,8 +54,11 @@ export async function analizarComprobanteConGemini(buffer, mimeType = 'image/jpe
     }
   ];
 
-  // Modelos compatibles en orden de prioridad
-  const modelos = ['gemini-2.0-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro'];
+  // Modelos en orden de prioridad. Se pueden sobrescribir sin redeploy con la variable
+  // GEMINI_MODELS (lista separada por comas). Nota: la familia gemini-1.5 fue retirada por Google.
+  const modelos = process.env.GEMINI_MODELS
+    ? process.env.GEMINI_MODELS.split(',').map(m => m.trim()).filter(Boolean)
+    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'];
 
   for (const nombreModelo of modelos) {
     try {
