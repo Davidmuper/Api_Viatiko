@@ -30,8 +30,29 @@ function modelosConfigurados() {
 // modelos multimodales que esa key realmente tiene habilitados.
 
 // Tiempos: ningún recibo debe tardar más de TIEMPO_TOTAL_MS en el servidor
-const TIEMPO_POR_MODELO_MS = 20000;
-const TIEMPO_TOTAL_MS = 40000;
+const TIEMPO_POR_MODELO_MS = 30000;
+const TIEMPO_TOTAL_MS = 50000;
+
+// Los modelos 2.5+ "piensan" antes de responder y por defecto lo hacen mucho (decenas de
+// segundos). Leer un recibo no lo necesita: se pide razonamiento mínimo y resolución media.
+export function configuracionRapida(nombreModelo) {
+  const m = String(nombreModelo).match(/gemini-(\d+(?:\.\d+)?)/);
+  const version = m ? parseFloat(m[1]) : 0;
+  if (version >= 3) {
+    return {
+      thinkingConfig: { thinkingLevel: 'low' },
+      mediaResolution: 'MEDIA_RESOLUTION_MEDIUM'
+    };
+  }
+  if (version >= 2.5) {
+    return {
+      // Los modelos pro no permiten desactivar el razonamiento: se usa el mínimo
+      thinkingConfig: { thinkingBudget: /pro/.test(nombreModelo) ? 128 : 0 },
+      mediaResolution: 'MEDIA_RESOLUTION_MEDIUM'
+    };
+  }
+  return {};
+}
 const TIEMPO_MINIMO_INTENTO_MS = 4000;
 const MAX_DESCUBIERTOS = 2;
 
@@ -234,14 +255,12 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
   // Límite total para que la petición nunca se quede colgada
   const limite = Date.now() + TIEMPO_TOTAL_MS;
 
-  const intentarModelo = async (nombreModelo) => {
-    intentados.add(nombreModelo);
-    const restante = limite - Date.now();
-    const timeout = Math.min(TIEMPO_POR_MODELO_MS, restante);
+  const llamar = async (nombreModelo, extras) => {
+    const timeout = Math.min(TIEMPO_POR_MODELO_MS, limite - Date.now());
     const model = genAI.getGenerativeModel(
       {
         model: nombreModelo,
-        generationConfig: { responseMimeType: 'application/json', temperature: 0 }
+        generationConfig: { responseMimeType: 'application/json', temperature: 0, ...extras }
       },
       { timeout }
     );
@@ -249,6 +268,22 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
     const result = await model.generateContent(partes);
     console.info(`Gemini ${nombreModelo} respondió en ${Date.now() - inicio} ms`);
     return extraerJson(result.response.text());
+  };
+
+  const intentarModelo = async (nombreModelo) => {
+    intentados.add(nombreModelo);
+    const extras = configuracionRapida(nombreModelo);
+    try {
+      return await llamar(nombreModelo, extras);
+    } catch (err) {
+      // Si el modelo no reconoce la configuración rápida (400), se reintenta sin ella
+      const rechazoConfig = /\b400\b|invalid argument|unknown name|thinking|media_?resolution/i.test(String(err?.message));
+      if (Object.keys(extras).length && rechazoConfig && limite - Date.now() > TIEMPO_MINIMO_INTENTO_MS) {
+        console.warn(`Gemini ${nombreModelo} rechazó la configuración rápida; reintentando sin ella`);
+        return llamar(nombreModelo, {});
+      }
+      throw err;
+    }
   };
 
   const configurados = modelosConfigurados();
