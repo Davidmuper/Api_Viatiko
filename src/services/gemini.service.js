@@ -14,12 +14,100 @@ const CATEGORIAS_DEFECTO = [
 const apiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : null;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
-// Modelos en orden de prioridad. Se pueden sobrescribir sin redeploy con la variable
-// GEMINI_MODELS (lista separada por comas). Nota: la familia gemini-1.5 fue retirada por Google.
+// Modelos preferidos en orden de prioridad. Se pueden sobrescribir sin redeploy con la
+// variable GEMINI_MODELS (lista separada por comas).
+const MODELOS_PREFERIDOS = ['gemini-1.5-flash', 'gemini-1.5-pro'];
+
 function modelosConfigurados() {
   return process.env.GEMINI_MODELS
     ? process.env.GEMINI_MODELS.split(',').map(m => m.trim()).filter(Boolean)
-    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'];
+    : MODELOS_PREFERIDOS;
+}
+
+// ---------- Descubrimiento automático de modelos ----------
+// Google retira modelos con frecuencia (404 "not found" / "no longer available").
+// Si los preferidos fallan, se consulta ListModels con la misma API key y se usan los
+// modelos multimodales que esa key realmente tiene habilitados.
+
+const URL_LISTA_MODELOS = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000';
+const TTL_CACHE_MS = 60 * 60 * 1000;
+let cacheModelos = { lista: null, expira: 0 };
+
+const EXCLUIR_MODELO = /(embedding|aqa|tts|audio|live|image-generation|imagen|veo|robotics|computer-use|learnlm|gemma)/i;
+
+// Prioriza: flash antes que pro, estables antes que preview/exp, versión más nueva primero
+export function ordenarModelosDisponibles(modelos) {
+  const version = (n) => {
+    const m = n.match(/gemini-(\d+(?:\.\d+)?)/);
+    return m ? parseFloat(m[1]) : 0;
+  };
+  const puntaje = (n) =>
+    (/flash/.test(n) ? 0 : 10) +
+    (/lite/.test(n) ? 1 : 0) +
+    (/(preview|exp|latest)/.test(n) ? 5 : 0);
+
+  return modelos
+    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => String(m.name || '').replace(/^models\//, ''))
+    .filter(n => /^gemini-/.test(n) && /(flash|pro)/.test(n) && !EXCLUIR_MODELO.test(n))
+    .sort((a, b) => puntaje(a) - puntaje(b) || version(b) - version(a) || a.localeCompare(b));
+}
+
+async function descubrirModelos() {
+  if (cacheModelos.lista && Date.now() < cacheModelos.expira) return cacheModelos.lista;
+
+  const resp = await fetch(URL_LISTA_MODELOS, { headers: { 'x-goog-api-key': apiKey } });
+  const cuerpo = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(`ListModels ${resp.status}: ${cuerpo?.error?.message || resp.statusText}`);
+  }
+
+  const lista = ordenarModelosDisponibles(cuerpo.models || []);
+  cacheModelos = { lista, expira: Date.now() + TTL_CACHE_MS };
+  console.info('Modelos Gemini disponibles para esta API key:', lista.slice(0, 6).join(', '));
+  return lista;
+}
+
+// Modelos que respondieron "no disponible": se omiten durante una hora para no repetir el 404
+const modelosNoDisponibles = new Map();
+const marcarNoDisponible = (nombre) => modelosNoDisponibles.set(nombre, Date.now() + TTL_CACHE_MS);
+const estaNoDisponible = (nombre) => {
+  const expira = modelosNoDisponibles.get(nombre);
+  if (expira && Date.now() < expira) return true;
+  modelosNoDisponibles.delete(nombre);
+  return false;
+};
+
+const esModeloNoDisponible = (err) =>
+  /\b404\b|not found|no longer available|is not supported|deprecated/i.test(String(err?.message || ''));
+
+// ---------- Imagen en formato inlineData ----------
+
+const MIME_SOPORTADOS = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+
+// Detecta el tipo real por los primeros bytes (los celulares a veces envían octet-stream o image/jpg)
+export function detectarMime(buffer, mimeDeclarado) {
+  const b = buffer;
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (b.length > 12 && b.toString('ascii', 4, 8) === 'ftyp') {
+    const marca = b.toString('ascii', 8, 12);
+    return /hei|mif|msf/.test(marca) ? 'image/heic' : 'image/heif';
+  }
+  const declarado = String(mimeDeclarado || '').toLowerCase().replace('image/jpg', 'image/jpeg');
+  return MIME_SOPORTADOS.includes(declarado) ? declarado : 'image/jpeg';
+}
+
+export function construirParteImagen(buffer, mimeDeclarado) {
+  const datos = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (datos.length === 0) throw new Error('La imagen llegó vacía');
+  return {
+    inlineData: {
+      data: datos.toString('base64'),
+      mimeType: detectarMime(datos, mimeDeclarado)
+    }
+  };
 }
 
 // Acepta YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY y DD/MM/YY. Retorna '' si no es válida.
@@ -120,20 +208,42 @@ Responde SOLO con un objeto JSON con estas claves:
 - "placa": placa del vehículo si aparece, si no "".
 No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
 
-  const partes = [
-    prompt,
-    { inlineData: { data: buffer.toString('base64'), mimeType: mimeType || 'image/jpeg' } }
-  ];
+  let parteImagen;
+  try {
+    parteImagen = construirParteImagen(buffer, mimeType);
+  } catch (err) {
+    return { ...vacio, ocr_ok: false, ocr_error: err.message };
+  }
+
+  // Formato de la API: texto + imagen en base64 como inlineData { data, mimeType }
+  const partes = [{ text: prompt }, parteImagen];
 
   const errores = [];
-  for (const nombreModelo of modelosConfigurados()) {
+  const intentados = new Set();
+  let descubiertos = false;
+
+  const intentarModelo = async (nombreModelo) => {
+    intentados.add(nombreModelo);
+    const model = genAI.getGenerativeModel({
+      model: nombreModelo,
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 }
+    });
+    const result = await model.generateContent(partes);
+    return extraerJson(result.response.text());
+  };
+
+  const configurados = modelosConfigurados();
+  const cola = configurados.filter(m => !estaNoDisponible(m));
+  // Si todos los preferidos están marcados como retirados, se pasa directo a los descubiertos
+  if (cola.length < configurados.length && cacheModelos.lista) {
+    descubiertos = true;
+    cola.push(...cacheModelos.lista.filter(m => !estaNoDisponible(m)).slice(0, 3));
+  }
+  while (cola.length > 0) {
+    const nombreModelo = cola.shift();
+    if (intentados.has(nombreModelo)) continue;
     try {
-      const model = genAI.getGenerativeModel({
-        model: nombreModelo,
-        generationConfig: { responseMimeType: 'application/json', temperature: 0 }
-      });
-      const result = await model.generateContent(partes);
-      const datos = extraerJson(result.response.text());
+      const datos = await intentarModelo(nombreModelo);
 
       return {
         fecha: normalizarFecha(datos.fecha),
@@ -150,6 +260,19 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
     } catch (err) {
       console.warn(`Gemini ${nombreModelo} falló: ${err.message}`);
       errores.push(`${nombreModelo}: ${err.message}`);
+
+      // Modelo retirado o no habilitado para la key: se descubren los disponibles (una sola vez)
+      if (esModeloNoDisponible(err)) marcarNoDisponible(nombreModelo);
+      if (esModeloNoDisponible(err) && !descubiertos) {
+        descubiertos = true;
+        try {
+          const disponibles = await descubrirModelos();
+          cola.push(...disponibles.filter(m => !intentados.has(m)).slice(0, 3));
+        } catch (errLista) {
+          console.warn(`No se pudo consultar ListModels: ${errLista.message}`);
+          errores.push(errLista.message);
+        }
+      }
     }
   }
 
@@ -157,6 +280,6 @@ No inventes datos: si un campo no se puede leer con seguridad, déjalo vacío.`;
   return {
     ...vacio,
     ocr_ok: false,
-    ocr_error: 'No se pudo leer el recibo con IA. ' + (errores[0] || '').slice(0, 250)
+    ocr_error: 'No se pudo leer el recibo con IA. ' + (errores[errores.length - 1] || '').slice(0, 250)
   };
 }
