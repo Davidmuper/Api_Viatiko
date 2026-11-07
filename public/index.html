@@ -232,7 +232,8 @@
 
       <div id="planCuerpo" class="space-y-4 text-xs"></div>
 
-      <div class="mt-5 pt-3 border-t border-slate-700 flex justify-end">
+      <div class="mt-5 pt-3 border-t border-slate-700 flex flex-wrap gap-2 justify-end">
+        <button id="btnPdfPlanilla" onclick="descargarPdfPlanilla(planillaAbierta)" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-xl text-xs">📄 Descargar PDF</button>
         <button onclick="cerrarPlanilla()" class="bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-xl text-xs">Cerrar</button>
       </div>
     </div>
@@ -244,6 +245,7 @@
     var conductoresMemoria = [];
     var pucsMemoria = [];
     var esRegistroManual = false;
+    var planillaAbierta = null;
     var BASE_URL = window.location.protocol + '//' + window.location.host;
 
     function cargarInicial() {
@@ -733,6 +735,24 @@
             '</div>' +
           '</div>';
 
+          planillaAbierta = viaje.id;
+
+          var anticipos = viaje.anticipos || [];
+          html += '<h5 class="font-bold text-white mt-3 mb-2">Anticipos Entregados:</h5><div class="space-y-1">';
+          if (anticipos.length === 0) {
+            html += '<p class="text-[11px] text-slate-500">' + (Number(viaje.anticipoTotal) > 0
+              ? 'Anticipo registrado sin consecutivo: ' + pesos(viaje.anticipoTotal)
+              : 'No se entregaron anticipos en este viaje.') + '</p>';
+          }
+          for (var a = 0; a < anticipos.length; a++) {
+            var an = anticipos[a];
+            html += '<div class="bg-slate-900/50 border border-slate-700/60 p-2 rounded-lg flex justify-between gap-2">' +
+              '<span class="text-slate-300"><strong class="text-blue-300">' + numeroAnticipo(an.consecutivo) + '</strong> • ' + an.fecha +
+              (an.observacion ? ' • ' + an.observacion : '') + '</span>' +
+              '<strong class="text-blue-400 whitespace-nowrap">' + pesos(an.valor) + '</strong></div>';
+          }
+          html += '</div>';
+
           var pagos = viaje.pagos || [];
           var pendiente = Number(viaje.saldoPendiente !== undefined ? viaje.saldoPendiente : viaje.saldoFinal);
           if (pagos.length > 0) {
@@ -820,6 +840,7 @@
                     ? '<button onclick="registrarPagoPlanilla(' + v.id + ', ' + pendiente + ')" class="bg-blue-600/80 hover:bg-blue-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">' + (pendiente < 0 ? 'Pagar al Conductor' : 'Registrar Reintegro') + '</button>'
                     : '') +
                   '<button onclick="verPlanilla(' + v.id + ')" class="bg-emerald-600/80 hover:bg-emerald-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Ver Planilla</button>' +
+                  '<button onclick="descargarPdfPlanilla(' + v.id + ')" class="bg-slate-600/80 hover:bg-slate-500 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">📄 PDF</button>' +
                   '<button onclick="eliminarPlanilla(' + v.id + ')" class="bg-red-700/80 hover:bg-red-600 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition">Eliminar</button>' +
                 '</div>' +
               '</div>';
@@ -831,26 +852,51 @@
       xhr.send();
     }
 
+    // Registra un anticipo nuevo con consecutivo (ANT-0001); el valor se suma al anticipo actual
     function asignarAnticipoPrompt(id, actual) {
-      var nuevo = prompt('Ingrese el nuevo valor del anticipo para el conductor:', actual);
-      if (nuevo === null) return;
+      var c = buscarConductorMemoria(id);
+      var nombre = c ? c.nombre : 'el conductor';
+      var texto = 'Valor del anticipo a entregar a ' + nombre + ':' +
+        (Number(actual) > 0 ? '\n(Se sumará al anticipo actual de ' + pesos(actual) + ')' : '');
+      var valor = prompt(texto, '');
+      if (valor === null) return;
+      var monto = parseFloat(String(valor).replace(/[^\d]/g, ''));
+      if (!monto || monto <= 0) return alert('Ingrese un valor válido.');
+      var obs = prompt('Observación del anticipo (opcional): ej. efectivo, transferencia, ruta Bogotá-Cali', '');
+      if (obs === null) return;
+
       var xhr = new XMLHttpRequest();
-      xhr.open('PATCH', BASE_URL + '/api/gastos/conductores/' + id + '/anticipo', true);
+      xhr.open('POST', BASE_URL + '/api/gastos/conductores/' + id + '/anticipos', true);
       xhr.setRequestHeader('Content-Type', 'application/json');
       xhr.onload = function() {
-        if (xhr.status >= 400) {
-          var msg = 'Error al actualizar el anticipo';
-          try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
-          alert(msg);
-          return;
-        }
+        if (xhr.status >= 400) return alert(textoError(xhr, 'Error al registrar el anticipo.'));
+        var r = JSON.parse(xhr.responseText);
+        alert('Anticipo ' + r.anticipo.numero + ' registrado por ' + pesos(r.anticipo.valor) +
+          '.\nAnticipo total de ' + r.conductor + ': ' + pesos(r.nuevoAnticipo));
         cargarConductoresPorEmpresa();
         setTimeout(renderAdminConductores, 400);
       };
       xhr.onerror = function() {
         alert('No se pudo conectar con el servidor');
       };
-      xhr.send(JSON.stringify({ anticipo: parseFloat(nuevo) || 0 }));
+      xhr.send(JSON.stringify({ valor: monto, observacion: obs.trim() }));
+    }
+
+    function numeroAnticipo(consecutivo) {
+      return 'ANT-' + ('0000' + consecutivo).slice(-4);
+    }
+
+    // Descarga el PDF de la planilla. Se abre en otra pestaña para que en iPhone
+    // (incluida la app instalada en la pantalla de inicio) no se pierda la sesión.
+    function descargarPdfPlanilla(id) {
+      var a = document.createElement('a');
+      a.href = BASE_URL + '/api/gastos/viajes/' + id + '/pdf';
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.download = 'planilla_' + id + '.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     }
 
     function pesos(n) {

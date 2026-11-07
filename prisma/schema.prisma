@@ -15,6 +15,7 @@ model Empresa {
   gastos          Gasto[]
   viajes          ViajeLiquidado[]
   pucs            Puc[]
+  anticipos       Anticipo[]
   createdAt       DateTime         @default(now())
 }
 
@@ -75,6 +76,28 @@ model ViajeLiquidado {
   saldoFinal      Float
   resumenGastos   String           @default("[]")
   pagos           PagoPlanilla[]
+  anticipos       Anticipo[]
+}
+
+// Cada entrega de dinero al conductor. El consecutivo es propio de cada empresa (ANT-0001).
+// viajeId queda en null mientras el viaje está abierto y se asigna al liquidar la planilla.
+model Anticipo {
+  id              Int              @id @default(autoincrement())
+  empresaId       Int
+  empresa         Empresa          @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  consecutivo     Int
+  conductorId     Int
+  conductor       String
+  placa           String
+  valor           Float
+  fecha           String
+  observacion     String           @default("")
+  viajeId         Int?
+  viaje           ViajeLiquidado?  @relation(fields: [viajeId], references: [id], onDelete: Cascade)
+  createdAt       DateTime         @default(now())
+
+  @@unique([empresaId, consecutivo])
+  @@index([conductorId, viajeId])
 }
 
 // Pagos o reintegros que registra el administrador para dejar la planilla en saldo 0.

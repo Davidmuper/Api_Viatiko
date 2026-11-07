@@ -4,6 +4,13 @@ import bcrypt from 'bcryptjs';
 import prisma from '../services/db.service.js';
 import { analizarComprobanteConGemini, diagnosticarGemini } from '../services/gemini.service.js';
 import { generarExportacionContable } from '../services/excel.service.js';
+import { generarPdfPlanilla, numeroAnticipo } from '../services/pdf.service.js';
+
+// Datos relacionados que acompañan cada planilla (historial, pagos y PDF)
+const INCLUDE_PLANILLA = {
+  pagos: { orderBy: { id: 'asc' } },
+  anticipos: { orderBy: { consecutivo: 'asc' } }
+};
 
 const router = Router();
 
@@ -164,7 +171,85 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// 4. Actualizar anticipo de conductor (PATCH)
+// 4a. Registrar un anticipo con consecutivo (ANT-0001). El valor se SUMA al anticipo actual.
+router.post('/conductores/:id/anticipos', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const valor = Number(req.body.valor);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'ID de conductor inválido' });
+    }
+    if (!Number.isFinite(valor) || valor <= 0) {
+      return res.status(400).json({ error: 'El valor del anticipo debe ser mayor a cero' });
+    }
+
+    const conductor = await prisma.conductor.findUnique({ where: { id } });
+    if (!conductor) {
+      return res.status(404).json({ error: 'Conductor no encontrado' });
+    }
+    if (conductor.rol === 'admin') {
+      return res.status(400).json({ error: 'No se pueden asignar anticipos al administrador' });
+    }
+
+    // El consecutivo es único por empresa; si dos registros chocan se reintenta con el siguiente
+    for (let intento = 1; intento <= 5; intento++) {
+      try {
+        const [anticipo, actualizado] = await prisma.$transaction(async (tx) => {
+          const ultimo = await tx.anticipo.aggregate({
+            where: { empresaId: conductor.empresaId },
+            _max: { consecutivo: true }
+          });
+          const creado = await tx.anticipo.create({
+            data: {
+              empresaId: conductor.empresaId,
+              consecutivo: (ultimo._max.consecutivo || 0) + 1,
+              conductorId: conductor.id,
+              conductor: conductor.nombre,
+              placa: conductor.placa,
+              valor,
+              fecha: fechaComoTexto(req.body.fecha),
+              observacion: String(req.body.observacion || '').trim()
+            }
+          });
+          const cond = await tx.conductor.update({
+            where: { id },
+            data: { anticipo: { increment: valor } }
+          });
+          return [creado, cond];
+        });
+
+        return res.status(201).json({
+          success: true,
+          anticipo: { ...anticipo, numero: numeroAnticipo(anticipo.consecutivo) },
+          conductor: actualizado.nombre,
+          nuevoAnticipo: actualizado.anticipo
+        });
+      } catch (error) {
+        if (error.code !== 'P2002' || intento === 5) throw error;
+      }
+    }
+  } catch (error) {
+    console.error('Error registrando anticipo:', error);
+    return res.status(500).json({ error: 'Error al registrar el anticipo' });
+  }
+});
+
+// 4b. Anticipos del viaje en curso de un conductor (aún no liquidados)
+router.get('/conductores/:id/anticipos', async (req, res) => {
+  try {
+    const anticipos = await prisma.anticipo.findMany({
+      where: { conductorId: Number(req.params.id), viajeId: null },
+      orderBy: { consecutivo: 'asc' }
+    });
+    return res.json(anticipos.map(a => ({ ...a, numero: numeroAnticipo(a.consecutivo) })));
+  } catch (error) {
+    console.error('Error listando anticipos:', error);
+    return res.status(500).json({ error: 'Error cargando los anticipos' });
+  }
+});
+
+// 4. Actualizar anticipo de conductor (PATCH). Reemplaza el valor SIN consecutivo:
+// se conserva solo para correcciones; la interfaz usa POST /conductores/:id/anticipos.
 router.patch('/conductores/:id/anticipo', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -416,6 +501,12 @@ router.post('/finalizar-liquidacion', async (req, res) => {
       });
     }
 
+    // Los anticipos con consecutivo entregados en este viaje quedan ligados a la planilla
+    await prisma.anticipo.updateMany({
+      where: { conductorId: targetConductor.id, viajeId: null },
+      data: { viajeId: viajeLiquidado.id }
+    });
+
     // Restablecer anticipo del conductor a 0
     await prisma.conductor.update({
       where: { id: targetConductor.id },
@@ -445,7 +536,7 @@ router.get('/viajes-historial', async (req, res) => {
     const historial = await prisma.viajeLiquidado.findMany({
       where: whereClause,
       orderBy: { id: 'desc' },
-      include: { pagos: { orderBy: { id: 'asc' } } }
+      include: INCLUDE_PLANILLA
     });
 
     return res.json(historial.map(conSaldoPendiente));
@@ -477,7 +568,7 @@ router.post('/viajes/:id/pagos', async (req, res) => {
 
     const viaje = await prisma.viajeLiquidado.findUnique({
       where: { id: viajeId },
-      include: { pagos: true }
+      include: INCLUDE_PLANILLA
     });
     if (!viaje) {
       return res.status(404).json({ error: 'Planilla no encontrada' });
@@ -509,7 +600,7 @@ router.post('/viajes/:id/pagos', async (req, res) => {
 
     const actualizado = await prisma.viajeLiquidado.findUnique({
       where: { id: viajeId },
-      include: { pagos: { orderBy: { id: 'asc' } } }
+      include: INCLUDE_PLANILLA
     });
     return res.status(201).json({ success: true, planilla: conSaldoPendiente(actualizado) });
   } catch (error) {
@@ -534,7 +625,35 @@ router.delete('/viajes/:id/pagos/:pagoId', async (req, res) => {
   }
 });
 
-// 9d. Eliminar planilla (p. ej. de prueba) junto con sus gastos y pagos
+// 9h. Descargar la planilla en PDF
+router.get('/viajes/:id/pdf', async (req, res) => {
+  try {
+    const viajeId = Number(req.params.id);
+    if (!Number.isInteger(viajeId)) {
+      return res.status(400).json({ error: 'ID de planilla inválido' });
+    }
+
+    const viaje = await prisma.viajeLiquidado.findUnique({
+      where: { id: viajeId },
+      include: { ...INCLUDE_PLANILLA, empresa: { select: { nombre: true } } }
+    });
+    if (!viaje) {
+      return res.status(404).json({ error: 'Planilla no encontrada' });
+    }
+
+    const pdf = await generarPdfPlanilla(conSaldoPendiente(viaje), viaje.empresa?.nombre);
+    const placa = String(viaje.placa || '').replace(/[^A-Za-z0-9]/g, '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="planilla_${viaje.id}_${placa}.pdf"`);
+    res.setHeader('Content-Length', pdf.length);
+    return res.send(pdf);
+  } catch (error) {
+    console.error('Error generando PDF de planilla:', error);
+    return res.status(500).json({ error: 'Error al generar el PDF de la planilla' });
+  }
+});
+
+// 9d. Eliminar planilla (p. ej. de prueba) junto con sus gastos, pagos y anticipos
 router.delete('/viajes/:id', async (req, res) => {
   try {
     const viajeId = Number(req.params.id);
